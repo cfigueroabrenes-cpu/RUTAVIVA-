@@ -126,14 +126,26 @@
     <div id="choferPanel" style="display:none;">
       <div class="field-label">Ruta de hoy</div>
       <select id="routeSelectChofer"></select>
-      <div style="text-align:right;margin-top:18px;">
-        <span id="btnDeleteRoute" style="font-family:'IBM Plex Mono',monospace;font-size:12px;color:#D98B6F;cursor:pointer;text-decoration:underline;text-underline-offset:3px;">Eliminar esta ruta</span>
+      <div style="margin-top:18px;font-family:'IBM Plex Mono',monospace;font-size:12px;">
+        <div><span id="btnEditParadas" style="color:var(--gold);cursor:pointer;text-decoration:underline;text-underline-offset:3px;">Editar paradas</span></div>
+        <div style="margin-top:8px;"><span id="btnDeleteRoute" style="color:#D98B6F;cursor:pointer;text-decoration:underline;text-underline-offset:3px;">Eliminar esta ruta</span></div>
       </div>
       <div id="addRouteForm" class="card" style="display:none;margin-top:12px;padding:16px;">
         <div class="field-label">Nombre de la ruta nueva</div>
         <input type="text" id="newRouteName" placeholder="ej: Cartago – Turrialba">
         <button class="btn btn-start" id="btnSaveRoute" style="margin-top:2px;">Guardar ruta</button>
         <div class="err" id="addRouteError" style="display:none;"></div>
+      </div>
+
+      <div id="editParadasForm" class="card" style="display:none;margin-top:12px;padding:16px;">
+        <div class="field-label">Paradas de <span id="editParadasRouteName"></span></div>
+        <div class="note" style="margin-top:0;">Parate en el punto exacto de la parada y tocá "Usar mi ubicación" para capturarla.</div>
+        <input type="text" id="newParadaNombre" placeholder="Nombre de la parada" style="margin-top:8px;">
+        <button class="btn btn-start" id="btnCaptureParada" style="margin-top:0;">📍 Usar mi ubicación actual</button>
+        <div id="paradaCaptureStatus" style="font-family:'IBM Plex Mono',monospace;font-size:11px;color:var(--text-muted);margin-top:8px;"></div>
+        <div id="editParadasListContainer" style="margin-top:14px;"></div>
+        <button class="btn btn-start" id="btnSaveParadas" style="margin-top:14px;">Guardar paradas</button>
+        <div class="err" id="editParadasError" style="display:none;"></div>
       </div>
 
       <div class="card ticket">
@@ -162,6 +174,11 @@
   <main id="mainPasajero" style="display:none;">
     <div class="field-label">Ruta a seguir</div>
     <select id="routeSelectPasajero"></select>
+
+    <div id="paradasBox" style="display:none;margin-top:14px;">
+      <div class="field-label">Paradas</div>
+      <div id="paradasList" style="font-size:14px;line-height:1.7;color:var(--text-light);"></div>
+    </div>
 
     <div id="map"></div>
 
@@ -220,7 +237,13 @@ document.getElementById('btnLogin').onclick = () => {
     })
     .catch(err => {
       loginError.style.display = 'block';
-      loginError.textContent = 'No se pudo iniciar sesión: correo o contraseña incorrectos.';
+      if (err.message === 'Failed to fetch'){
+        loginError.textContent = 'No se pudo conectar con Firebase (parece que estás en una vista previa que bloquea la red). Abrí el link real del sitio publicado, no la vista previa del chat.';
+      } else if (err.message && err.message.includes('INVALID_LOGIN_CREDENTIALS')){
+        loginError.textContent = 'Correo o contraseña incorrectos.';
+      } else {
+        loginError.textContent = 'No se pudo iniciar sesión: ' + err.message;
+      }
     });
 };
 
@@ -267,7 +290,7 @@ async function loadRoutes(selectIdToKeep){
     if (!res.ok) throw new Error("HTTP " + res.status);
     const data = await res.json();
     if (data){
-      ROUTES = Object.keys(data).map(id => ({ id, name: data[id].name }))
+      ROUTES = Object.keys(data).map(id => ({ id, name: data[id].name, paradas: data[id].paradas || [] }))
         .sort((a,b) => a.name.localeCompare(b.name));
     } else if (idToken){
       // Primera vez: sembrar las rutas por defecto en Firebase para que queden guardadas de verdad
@@ -342,7 +365,7 @@ document.getElementById('btnSaveRoute').onclick = async () => {
     const res = await fetch(`${DB_URL}/rutas/${id}.json?auth=${idToken}`, {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ name })
+      body: JSON.stringify({ name, paradas: [] })
     });
     if (!res.ok) throw new Error("HTTP " + res.status);
     nameInput.value = '';
@@ -378,6 +401,102 @@ btnDeleteRoute.onclick = async () => {
   }
 };
 
+const btnEditParadas = document.getElementById('btnEditParadas');
+const editParadasForm = document.getElementById('editParadasForm');
+let editingParadas = [];
+
+function renderParadasEditorList(){
+  const container = document.getElementById('editParadasListContainer');
+  if (!editingParadas.length){
+    container.innerHTML = '<div class="note" style="margin-top:0;">Todavía no hay paradas agregadas.</div>';
+    return;
+  }
+  container.innerHTML = editingParadas.map((p, i) => `
+    <div style="display:flex;justify-content:space-between;align-items:center;background:var(--bg-elevated-2);border-radius:8px;padding:10px 12px;margin-bottom:6px;">
+      <div>
+        <div style="font-size:14px;">${i+1}. ${p.nombre}</div>
+        <div style="font-family:'IBM Plex Mono',monospace;font-size:10px;color:var(--text-muted);">${p.lat.toFixed(5)}, ${p.lng.toFixed(5)}</div>
+      </div>
+      <span data-idx="${i}" class="removeParadaBtn" style="color:#D98B6F;cursor:pointer;font-family:'IBM Plex Mono',monospace;font-size:12px;">Quitar</span>
+    </div>
+  `).join('');
+  container.querySelectorAll('.removeParadaBtn').forEach(btn => {
+    btn.onclick = () => {
+      editingParadas.splice(parseInt(btn.dataset.idx), 1);
+      renderParadasEditorList();
+    };
+  });
+}
+
+btnEditParadas.onclick = () => {
+  const routeId = routeSelectChofer.value;
+  if (!routeId || routeId === '__add__') return;
+  const ruta = ROUTES.find(r => r.id === routeId);
+  if (!ruta) return;
+  document.getElementById('editParadasRouteName').textContent = ruta.name;
+  editingParadas = (ruta.paradas || []).filter(p => typeof p === 'object' && p.lat != null).map(p => ({ ...p }));
+  renderParadasEditorList();
+  document.getElementById('addRouteForm').style.display = 'none';
+  editParadasForm.style.display = 'block';
+};
+
+document.getElementById('btnCaptureParada').onclick = () => {
+  const nombreInput = document.getElementById('newParadaNombre');
+  const statusEl = document.getElementById('paradaCaptureStatus');
+  const nombre = nombreInput.value.trim();
+  if (!nombre){
+    statusEl.textContent = 'Escribí primero el nombre de la parada.';
+    statusEl.style.color = '#D98B6F';
+    return;
+  }
+  if (!navigator.geolocation){
+    statusEl.textContent = 'Este dispositivo no soporta GPS.';
+    statusEl.style.color = '#D98B6F';
+    return;
+  }
+  statusEl.textContent = 'Obteniendo ubicación...';
+  statusEl.style.color = '';
+  navigator.geolocation.getCurrentPosition(
+    (pos) => {
+      editingParadas.push({ nombre, lat: pos.coords.latitude, lng: pos.coords.longitude });
+      renderParadasEditorList();
+      nombreInput.value = '';
+      statusEl.textContent = 'Parada capturada: ' + nombre;
+      statusEl.style.color = 'var(--teal)';
+    },
+    (err) => {
+      statusEl.textContent = 'Error de ubicación: ' + err.message;
+      statusEl.style.color = '#D98B6F';
+    },
+    { enableHighAccuracy: true, timeout: 15000 }
+  );
+};
+
+document.getElementById('btnSaveParadas').onclick = async () => {
+  const routeId = routeSelectChofer.value;
+  const editParadasError = document.getElementById('editParadasError');
+  editParadasError.style.display = 'none';
+
+  if (!idToken){
+    editParadasError.style.display = 'block';
+    editParadasError.textContent = 'Necesitás iniciar sesión como chófer.';
+    return;
+  }
+  try{
+    const res = await fetch(`${DB_URL}/rutas/${routeId}/paradas.json?auth=${idToken}`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(editingParadas)
+    });
+    if (!res.ok) throw new Error("HTTP " + res.status);
+    editParadasForm.style.display = 'none';
+    await loadRoutes(routeId);
+  }catch(e){
+    editParadasError.style.display = 'block';
+    editParadasError.textContent = 'No se pudieron guardar las paradas: ' + e.message;
+  }
+};
+
 const tabChofer = document.getElementById('tabChofer');
 const tabPasajero = document.getElementById('tabPasajero');
 const mainChofer = document.getElementById('mainChofer');
@@ -391,7 +510,7 @@ tabPasajero.onclick = () => {
   tabPasajero.classList.add('active'); tabChofer.classList.remove('active');
   mainPasajero.style.display = 'block'; mainChofer.style.display = 'none';
   setTimeout(() => { if (map) map.invalidateSize(); }, 50);
-  loadRoutes().then(refreshPassengerData);
+  loadRoutes().then(() => { refreshPassengerData(); updateParadasDisplay(); });
 };
 
 let watchId = null;
@@ -498,6 +617,7 @@ btnToggleTrip.onclick = () => { tripActive ? stopTrip() : startTrip(); };
 
 let map = null;
 let busMarker = null;
+let paradaMarkers = [];
 
 function initMap(){
   map = L.map('map', { zoomControl: true, attributionControl: false }).setView([9.8800, -83.9600], 12);
@@ -543,7 +663,46 @@ async function refreshPassengerData(){
   }
 }
 
-routeSelectPasajero.onchange = refreshPassengerData;
+function updateParadasDisplay(){
+  const routeId = routeSelectPasajero.value;
+  const ruta = ROUTES.find(r => r.id === routeId);
+  const paradasBox = document.getElementById('paradasBox');
+  const paradasList = document.getElementById('paradasList');
+
+  paradaMarkers.forEach(m => map.removeLayer(m));
+  paradaMarkers = [];
+
+  const paradasConCoords = (ruta && ruta.paradas) ? ruta.paradas.filter(p => typeof p === 'object' && p.lat != null) : [];
+
+  if (ruta && ruta.paradas && ruta.paradas.length){
+    paradasList.innerHTML = ruta.paradas.map((p, i) => {
+      const nombre = typeof p === 'object' ? p.nombre : p;
+      return `${i+1}. ${nombre}`;
+    }).join('<br>');
+    paradasBox.style.display = 'block';
+  } else {
+    paradasBox.style.display = 'none';
+  }
+
+  paradasConCoords.forEach((p, i) => {
+    const marker = L.circleMarker([p.lat, p.lng], {
+      radius: 7,
+      color: '#4FA98C',
+      weight: 2,
+      fillColor: '#12312A',
+      fillOpacity: 1
+    }).addTo(map);
+    marker.bindPopup(`<b>${i+1}. ${p.nombre}</b>`);
+    paradaMarkers.push(marker);
+  });
+
+  if (paradasConCoords.length){
+    const bounds = L.latLngBounds(paradasConCoords.map(p => [p.lat, p.lng]));
+    map.fitBounds(bounds, { padding: [30,30] });
+  }
+}
+
+routeSelectPasajero.onchange = () => { refreshPassengerData(); updateParadasDisplay(); };
 setInterval(() => { if (mainPasajero.style.display !== 'none') refreshPassengerData(); }, 3000);
 </script>
 </body>
