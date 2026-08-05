@@ -110,6 +110,7 @@
     <div class="tabs">
       <div class="tab active" id="tabChofer">Chófer</div>
       <div class="tab" id="tabPasajero">Pasajero</div>
+      <div class="tab" id="tabAdmin">Admin</div>
     </div>
   </header>
 
@@ -208,6 +209,23 @@
       <div class="note">La posición se actualiza automáticamente mientras el chófer tenga el viaje activo en esta misma ruta.</div>
     </div>
   </main>
+
+  <main id="mainAdmin" style="display:none;">
+    <div class="card ticket" id="adminLoginCard">
+      <div class="stub-tag">RV · ADM</div>
+      <div class="field-label">Acceso de administrador</div>
+      <input type="email" id="adminEmail" placeholder="correo">
+      <input type="password" id="adminPassword" placeholder="contraseña">
+      <button class="btn btn-start" id="btnAdminLogin">Entrar</button>
+      <div class="err" id="adminAuthError" style="display:none;"></div>
+    </div>
+
+    <div id="adminContent" style="display:none;">
+      <div class="field-label">Choferes en ruta ahora</div>
+      <div id="adminRoutesList"></div>
+      <div class="note">Se actualiza cada pocos segundos. Para crear, bloquear o eliminar cuentas de chófer o pasajero, hacelo desde Firebase Console → Authentication → Users.</div>
+    </div>
+  </main>
 </div>
 
 <script>
@@ -252,6 +270,11 @@ document.getElementById('btnLogin').onclick = () => {
       loginCard.style.display = 'none';
       choferPanel.style.display = 'block';
       loadRoutes(routeSelectChofer.value);
+      fetch(`${DB_URL}/choferes/${driverUid}.json?auth=${idToken}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ email: data.email })
+      }).catch(() => {});
     })
     .catch(err => {
       loginError.style.display = 'block';
@@ -336,6 +359,88 @@ btnPassengerLogin.onclick = () => {
       }
     });
 };
+
+// ================= Admin: login y vista en tiempo real =================
+let adminIdToken = null;
+
+const adminLoginCard = document.getElementById('adminLoginCard');
+const adminContent = document.getElementById('adminContent');
+const adminAuthError = document.getElementById('adminAuthError');
+
+document.getElementById('btnAdminLogin').onclick = () => {
+  const email = document.getElementById('adminEmail').value.trim();
+  const password = document.getElementById('adminPassword').value;
+  adminAuthError.style.display = 'none';
+
+  if (!email || !password){
+    adminAuthError.style.display = 'block';
+    adminAuthError.textContent = 'Escribí correo y contraseña.';
+    return;
+  }
+
+  fetch(`https://identitytoolkit.googleapis.com/v1/accounts:signInWithPassword?key=${API_KEY}`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ email, password, returnSecureToken: true })
+  })
+    .then(res => res.json().then(data => ({ ok: res.ok, data })))
+    .then(({ ok, data }) => {
+      if (!ok) throw new Error(data.error ? data.error.message : "Error desconocido");
+      adminIdToken = data.idToken;
+      adminLoginCard.style.display = 'none';
+      adminContent.style.display = 'block';
+      loadRoutes().then(refreshAdminView);
+    })
+    .catch(err => {
+      adminAuthError.style.display = 'block';
+      if (err.message === 'Failed to fetch'){
+        adminAuthError.textContent = 'No se pudo conectar con Firebase (¿estás en la vista previa del chat?). Abrí el link real del sitio publicado.';
+      } else if (err.message && err.message.includes('INVALID_LOGIN_CREDENTIALS')){
+        adminAuthError.textContent = 'Correo o contraseña incorrectos.';
+      } else {
+        adminAuthError.textContent = 'No se pudo iniciar sesión: ' + err.message;
+      }
+    });
+};
+
+async function refreshAdminView(){
+  if (!adminIdToken) return;
+  const container = document.getElementById('adminRoutesList');
+  let choferesMap = {};
+  try{
+    const res = await fetch(`${DB_URL}/choferes.json?auth=${adminIdToken}`);
+    if (res.ok){
+      const data = await res.json();
+      if (data) choferesMap = data;
+    }
+  }catch(e){ /* seguimos sin nombres si falla */ }
+
+  const rows = await Promise.all(ROUTES.map(async (ruta) => {
+    try{
+      const res = await fetch(`${DB_URL}/ubicaciones/${ruta.id}.json`);
+      const data = res.ok ? await res.json() : null;
+      if (!data) return { ruta, live: false };
+      const ageSeconds = (Date.now() - data.timestamp) / 1000;
+      const isLive = data.active && ageSeconds < 20;
+      const email = (choferesMap[data.choferUid] && choferesMap[data.choferUid].email) || 'desconocido';
+      return { ruta, live: isLive, email, ageSeconds };
+    }catch(e){
+      return { ruta, live: false };
+    }
+  }));
+
+  container.innerHTML = rows.map(r => `
+    <div class="card" style="padding:14px 16px;margin-top:10px;">
+      <div style="display:flex;justify-content:space-between;align-items:center;">
+        <div style="font-family:'Fraunces',serif;font-weight:600;font-size:15px;">${r.ruta.name}</div>
+        <span class="live-badge ${r.live ? 'on' : 'off'}">${r.live ? 'En vivo' : 'Sin señal'}</span>
+      </div>
+      ${r.live ? `<div class="note" style="margin-top:6px;">Chófer: ${r.email}</div>` : ''}
+    </div>
+  `).join('');
+}
+
+setInterval(() => { if (adminIdToken && mainAdmin.style.display !== 'none') refreshAdminView(); }, 5000);
 
 async function firebaseWrite(routeId, data){
   const res = await fetch(`${DB_URL}/ubicaciones/${routeId}.json?auth=${idToken}`, {
@@ -639,20 +744,33 @@ document.getElementById('btnSaveParadas').onclick = async () => {
 
 const tabChofer = document.getElementById('tabChofer');
 const tabPasajero = document.getElementById('tabPasajero');
+const tabAdmin = document.getElementById('tabAdmin');
 const mainChofer = document.getElementById('mainChofer');
 const mainPasajero = document.getElementById('mainPasajero');
+const mainAdmin = document.getElementById('mainAdmin');
+
+function activateTab(tab){
+  [tabChofer, tabPasajero, tabAdmin].forEach(t => t.classList.remove('active'));
+  [mainChofer, mainPasajero, mainAdmin].forEach(m => m.style.display = 'none');
+  tab.classList.add('active');
+}
 
 tabChofer.onclick = () => {
-  tabChofer.classList.add('active'); tabPasajero.classList.remove('active');
-  mainChofer.style.display = 'block'; mainPasajero.style.display = 'none';
+  activateTab(tabChofer);
+  mainChofer.style.display = 'block';
 };
 tabPasajero.onclick = () => {
-  tabPasajero.classList.add('active'); tabChofer.classList.remove('active');
-  mainPasajero.style.display = 'block'; mainChofer.style.display = 'none';
+  activateTab(tabPasajero);
+  mainPasajero.style.display = 'block';
   if (passengerIdToken){
     setTimeout(() => { if (map) map.invalidateSize(); }, 50);
     loadRoutes().then(() => { refreshPassengerData(); updateParadasDisplay(); });
   }
+};
+tabAdmin.onclick = () => {
+  activateTab(tabAdmin);
+  mainAdmin.style.display = 'block';
+  if (adminIdToken) refreshAdminView();
 };
 
 let watchId = null;
