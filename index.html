@@ -172,23 +172,41 @@
   </main>
 
   <main id="mainPasajero" style="display:none;">
-    <div class="field-label">Ruta a seguir</div>
-    <select id="routeSelectPasajero"></select>
-
-    <div id="paradasBox" style="display:none;margin-top:14px;">
-      <div class="field-label">Paradas</div>
-      <div id="paradasList" style="font-size:14px;line-height:1.7;color:var(--text-light);"></div>
-    </div>
-
-    <div id="map"></div>
-
-    <div class="live-banner">
-      <div class="live-left">
-        <span class="live-badge off" id="liveBadge">Sin señal</span>
+    <div class="card ticket" id="passengerLoginCard">
+      <div class="stub-tag">RV · PAX</div>
+      <div class="field-label" id="passengerAuthTitle">Iniciá sesión como pasajero</div>
+      <input type="email" id="passengerEmail" placeholder="correo">
+      <input type="password" id="passengerPassword" placeholder="contraseña">
+      <button class="btn btn-start" id="btnPassengerLogin">Entrar</button>
+      <div style="text-align:center;margin-top:10px;font-family:'IBM Plex Mono',monospace;font-size:12px;">
+        <span id="btnTogglePassengerMode" style="color:var(--gold);cursor:pointer;text-decoration:underline;text-underline-offset:3px;">¿Primera vez? Creá tu cuenta</span>
       </div>
-      <div class="live-time" id="liveTime">—</div>
+      <div class="err" id="passengerAuthError" style="display:none;"></div>
     </div>
-    <div class="note">La posición se actualiza automáticamente mientras el chófer tenga el viaje activo en esta misma ruta.</div>
+
+    <div id="passengerContent" style="display:none;">
+      <div class="field-label">Ruta a seguir</div>
+      <input type="text" id="routeSearchPasajero" placeholder="Buscar ruta...">
+      <select id="routeSelectPasajero"></select>
+      <div style="margin-top:18px;font-family:'IBM Plex Mono',monospace;font-size:12px;">
+        <span id="btnDeleteRoutePasajero" style="color:#D98B6F;cursor:pointer;text-decoration:underline;text-underline-offset:3px;">Eliminar esta ruta</span>
+      </div>
+
+      <div id="paradasBox" style="display:none;margin-top:14px;">
+        <div class="field-label">Paradas</div>
+        <div id="paradasList" style="font-size:14px;line-height:1.7;color:var(--text-light);"></div>
+      </div>
+
+      <div id="map"></div>
+
+      <div class="live-banner">
+        <div class="live-left">
+          <span class="live-badge off" id="liveBadge">Sin señal</span>
+        </div>
+        <div class="live-time" id="liveTime">—</div>
+      </div>
+      <div class="note">La posición se actualiza automáticamente mientras el chófer tenga el viaje activo en esta misma ruta.</div>
+    </div>
   </main>
 </div>
 
@@ -243,6 +261,78 @@ document.getElementById('btnLogin').onclick = () => {
         loginError.textContent = 'Correo o contraseña incorrectos.';
       } else {
         loginError.textContent = 'No se pudo iniciar sesión: ' + err.message;
+      }
+    });
+};
+
+// ================= Pasajero: login / registro =================
+let passengerIdToken = null;
+let passengerMode = 'login'; // 'login' | 'register'
+
+const passengerLoginCard = document.getElementById('passengerLoginCard');
+const passengerContent = document.getElementById('passengerContent');
+const passengerAuthError = document.getElementById('passengerAuthError');
+const passengerAuthTitle = document.getElementById('passengerAuthTitle');
+const btnPassengerLogin = document.getElementById('btnPassengerLogin');
+const btnTogglePassengerMode = document.getElementById('btnTogglePassengerMode');
+
+btnTogglePassengerMode.onclick = () => {
+  passengerMode = passengerMode === 'login' ? 'register' : 'login';
+  if (passengerMode === 'register'){
+    passengerAuthTitle.textContent = 'Creá tu cuenta de pasajero';
+    btnPassengerLogin.textContent = 'Crear cuenta';
+    btnTogglePassengerMode.textContent = 'Ya tengo cuenta, iniciar sesión';
+  } else {
+    passengerAuthTitle.textContent = 'Iniciá sesión como pasajero';
+    btnPassengerLogin.textContent = 'Entrar';
+    btnTogglePassengerMode.textContent = '¿Primera vez? Creá tu cuenta';
+  }
+  passengerAuthError.style.display = 'none';
+};
+
+function onPassengerAuthSuccess(data){
+  passengerIdToken = data.idToken;
+  passengerLoginCard.style.display = 'none';
+  passengerContent.style.display = 'block';
+  setTimeout(() => { if (map) map.invalidateSize(); }, 50);
+  loadRoutes().then(() => { refreshPassengerData(); updateParadasDisplay(); });
+}
+
+btnPassengerLogin.onclick = () => {
+  const email = document.getElementById('passengerEmail').value.trim();
+  const password = document.getElementById('passengerPassword').value;
+  passengerAuthError.style.display = 'none';
+
+  if (!email || !password){
+    passengerAuthError.style.display = 'block';
+    passengerAuthError.textContent = 'Escribí correo y contraseña.';
+    return;
+  }
+
+  const endpoint = passengerMode === 'register' ? 'signUp' : 'signInWithPassword';
+
+  fetch(`https://identitytoolkit.googleapis.com/v1/accounts:${endpoint}?key=${API_KEY}`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ email, password, returnSecureToken: true })
+  })
+    .then(res => res.json().then(data => ({ ok: res.ok, data })))
+    .then(({ ok, data }) => {
+      if (!ok) throw new Error(data.error ? data.error.message : "Error desconocido");
+      onPassengerAuthSuccess(data);
+    })
+    .catch(err => {
+      passengerAuthError.style.display = 'block';
+      if (err.message === 'Failed to fetch'){
+        passengerAuthError.textContent = 'No se pudo conectar con Firebase (¿estás en la vista previa del chat?). Abrí el link real del sitio publicado.';
+      } else if (err.message && err.message.includes('EMAIL_EXISTS')){
+        passengerAuthError.textContent = 'Ese correo ya tiene cuenta. Tocá "Ya tengo cuenta" para iniciar sesión.';
+      } else if (err.message && err.message.includes('INVALID_LOGIN_CREDENTIALS')){
+        passengerAuthError.textContent = 'Correo o contraseña incorrectos.';
+      } else if (err.message && err.message.includes('WEAK_PASSWORD')){
+        passengerAuthError.textContent = 'La contraseña debe tener al menos 6 caracteres.';
+      } else {
+        passengerAuthError.textContent = 'No se pudo continuar: ' + err.message;
       }
     });
 };
@@ -309,7 +399,8 @@ async function loadRoutes(selectIdToKeep){
     ROUTES = ROUTES.length ? ROUTES : DEFAULT_ROUTES;
   }
   populateSelect(routeSelectChofer, true, true);
-  populateSelect(routeSelectPasajero, true, false);
+  if (selectIdToKeep) routeSearchPasajero.value = '';
+  renderFilteredPassengerOptions();
   if (selectIdToKeep){
     routeSelectChofer.value = selectIdToKeep;
     routeSelectPasajero.value = selectIdToKeep;
@@ -320,7 +411,26 @@ async function loadRoutes(selectIdToKeep){
 
 const routeSelectChofer = document.getElementById('routeSelectChofer');
 const routeSelectPasajero = document.getElementById('routeSelectPasajero');
+const routeSearchPasajero = document.getElementById('routeSearchPasajero');
 const btnDeleteRoute = document.getElementById('btnDeleteRoute');
+
+function renderFilteredPassengerOptions(){
+  const q = routeSearchPasajero.value.trim().toLowerCase();
+  const filtered = q ? ROUTES.filter(r => r.name.toLowerCase().includes(q)) : ROUTES;
+  const prevValue = routeSelectPasajero.value;
+  if (filtered.length){
+    routeSelectPasajero.innerHTML = filtered.map(r => `<option value="${r.id}">${r.name}</option>`).join('');
+    routeSelectPasajero.value = filtered.some(r => r.id === prevValue) ? prevValue : filtered[0].id;
+  } else {
+    routeSelectPasajero.innerHTML = '<option value="">Sin rutas que coincidan</option>';
+  }
+}
+
+routeSearchPasajero.oninput = () => {
+  renderFilteredPassengerOptions();
+  refreshPassengerData();
+  updateParadasDisplay();
+};
 let lastRealRouteId = null;
 let deleteConfirmPending = false;
 
@@ -400,6 +510,36 @@ btnDeleteRoute.onclick = async () => {
     btnDeleteRoute.textContent = 'Error al eliminar: ' + e.message;
   }
 };
+
+const btnDeleteRoutePasajero = document.getElementById('btnDeleteRoutePasajero');
+let deletePasajeroConfirmPending = false;
+
+btnDeleteRoutePasajero.onclick = async () => {
+  if (!passengerIdToken) return;
+  const routeId = routeSelectPasajero.value;
+  if (!routeId) return;
+
+  if (!deletePasajeroConfirmPending){
+    deletePasajeroConfirmPending = true;
+    btnDeleteRoutePasajero.textContent = '¿Seguro? Tocá de nuevo para confirmar';
+    btnDeleteRoutePasajero.style.color = '#C1633D';
+    return;
+  }
+
+  try{
+    const res = await fetch(`${DB_URL}/rutas/${routeId}.json?auth=${passengerIdToken}`, { method: "DELETE" });
+    if (!res.ok) throw new Error("HTTP " + res.status);
+    deletePasajeroConfirmPending = false;
+    btnDeleteRoutePasajero.textContent = 'Eliminar esta ruta';
+    btnDeleteRoutePasajero.style.color = '#D98B6F';
+    await loadRoutes();
+    refreshPassengerData();
+    updateParadasDisplay();
+  }catch(e){
+    btnDeleteRoutePasajero.textContent = 'Error al eliminar: ' + e.message;
+  }
+};
+
 
 const btnEditParadas = document.getElementById('btnEditParadas');
 const editParadasForm = document.getElementById('editParadasForm');
@@ -509,8 +649,10 @@ tabChofer.onclick = () => {
 tabPasajero.onclick = () => {
   tabPasajero.classList.add('active'); tabChofer.classList.remove('active');
   mainPasajero.style.display = 'block'; mainChofer.style.display = 'none';
-  setTimeout(() => { if (map) map.invalidateSize(); }, 50);
-  loadRoutes().then(() => { refreshPassengerData(); updateParadasDisplay(); });
+  if (passengerIdToken){
+    setTimeout(() => { if (map) map.invalidateSize(); }, 50);
+    loadRoutes().then(() => { refreshPassengerData(); updateParadasDisplay(); });
+  }
 };
 
 let watchId = null;
