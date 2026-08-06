@@ -120,6 +120,7 @@
       <div class="field-label">Acceso de chófer</div>
       <input type="email" id="loginEmail" placeholder="correo">
       <input type="password" id="loginPassword" placeholder="contraseña">
+      <input type="text" id="loginAdminCode" placeholder="Código de administrador (te lo da tu empresa)">
       <button class="btn btn-start" id="btnLogin">Entrar</button>
       <div class="err" id="loginError" style="display:none;"></div>
     </div>
@@ -221,7 +222,17 @@
     </div>
 
     <div id="adminContent" style="display:none;">
-      <div class="field-label">Choferes en ruta ahora</div>
+      <div class="card ticket">
+        <div class="stub-tag">TU CÓDIGO</div>
+        <div class="field-label">Compartí este código con tus choferes</div>
+        <div id="adminOwnCode" style="font-family:'IBM Plex Mono',monospace;font-size:15px;color:var(--gold);word-break:break-all;"></div>
+        <div class="note" style="margin-top:8px;">Cada chofer debe escribir este código al iniciar sesión, para quedar vinculado a tu cuenta.</div>
+      </div>
+
+      <div class="field-label" style="margin-top:20px;">Tus choferes registrados</div>
+      <div id="adminChoferesList"></div>
+
+      <div class="field-label" style="margin-top:20px;">Rutas en vivo (solo tus choferes)</div>
       <div id="adminRoutesList"></div>
       <div class="note">Se actualiza cada pocos segundos. Para crear, bloquear o eliminar cuentas de chófer o pasajero, hacelo desde Firebase Console → Authentication → Users.</div>
     </div>
@@ -248,11 +259,17 @@ const loginError = document.getElementById('loginError');
 document.getElementById('btnLogin').onclick = () => {
   const email = document.getElementById('loginEmail').value.trim();
   const password = document.getElementById('loginPassword').value;
+  const adminCode = document.getElementById('loginAdminCode').value.trim();
   loginError.style.display = 'none';
 
   if (!email || !password){
     loginError.style.display = 'block';
     loginError.textContent = 'Escribí correo y contraseña.';
+    return;
+  }
+  if (!adminCode){
+    loginError.style.display = 'block';
+    loginError.textContent = 'Escribí el código de administrador que te dio tu empresa.';
     return;
   }
 
@@ -273,7 +290,7 @@ document.getElementById('btnLogin').onclick = () => {
       fetch(`${DB_URL}/choferes/${driverUid}.json?auth=${idToken}`, {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ email: data.email })
+        body: JSON.stringify({ email: data.email, adminUid: adminCode })
       }).catch(() => {});
     })
     .catch(err => {
@@ -362,6 +379,7 @@ btnPassengerLogin.onclick = () => {
 
 // ================= Admin: login y vista en tiempo real =================
 let adminIdToken = null;
+let adminOwnUid = null;
 
 const adminLoginCard = document.getElementById('adminLoginCard');
 const adminContent = document.getElementById('adminContent');
@@ -387,6 +405,8 @@ document.getElementById('btnAdminLogin').onclick = () => {
     .then(({ ok, data }) => {
       if (!ok) throw new Error(data.error ? data.error.message : "Error desconocido");
       adminIdToken = data.idToken;
+      adminOwnUid = data.localId;
+      document.getElementById('adminOwnCode').textContent = adminOwnUid;
       adminLoginCard.style.display = 'none';
       adminContent.style.display = 'block';
       loadRoutes().then(refreshAdminView);
@@ -405,7 +425,8 @@ document.getElementById('btnAdminLogin').onclick = () => {
 
 async function refreshAdminView(){
   if (!adminIdToken) return;
-  const container = document.getElementById('adminRoutesList');
+  const routesContainer = document.getElementById('adminRoutesList');
+  const choferesContainer = document.getElementById('adminChoferesList');
   let choferesMap = {};
   try{
     const res = await fetch(`${DB_URL}/choferes.json?auth=${adminIdToken}`);
@@ -415,21 +436,33 @@ async function refreshAdminView(){
     }
   }catch(e){ /* seguimos sin nombres si falla */ }
 
+  // Solo los choferes vinculados a este administrador (por su código/UID)
+  const misChoferes = Object.keys(choferesMap)
+    .filter(uid => choferesMap[uid].adminUid === adminOwnUid)
+    .map(uid => ({ uid, email: choferesMap[uid].email }));
+
+  choferesContainer.innerHTML = misChoferes.length
+    ? misChoferes.map(c => `<div class="note" style="margin-top:4px;">• ${c.email}</div>`).join('')
+    : '<div class="note">Todavía ningún chofer inició sesión con tu código.</div>';
+
+  const misChoferesUids = misChoferes.map(c => c.uid);
+
   const rows = await Promise.all(ROUTES.map(async (ruta) => {
     try{
       const res = await fetch(`${DB_URL}/ubicaciones/${ruta.id}.json`);
       const data = res.ok ? await res.json() : null;
-      if (!data) return { ruta, live: false };
+      if (!data || !misChoferesUids.includes(data.choferUid)) return { ruta, live: false, mine: false };
       const ageSeconds = (Date.now() - data.timestamp) / 1000;
       const isLive = data.active && ageSeconds < 20;
       const email = (choferesMap[data.choferUid] && choferesMap[data.choferUid].email) || 'desconocido';
-      return { ruta, live: isLive, email, ageSeconds };
+      return { ruta, live: isLive, mine: true, email, ageSeconds };
     }catch(e){
-      return { ruta, live: false };
+      return { ruta, live: false, mine: false };
     }
   }));
 
-  container.innerHTML = rows.map(r => `
+  const relevantRows = rows.filter(r => r.mine);
+  routesContainer.innerHTML = relevantRows.length ? relevantRows.map(r => `
     <div class="card" style="padding:14px 16px;margin-top:10px;">
       <div style="display:flex;justify-content:space-between;align-items:center;">
         <div style="font-family:'Fraunces',serif;font-weight:600;font-size:15px;">${r.ruta.name}</div>
@@ -437,7 +470,7 @@ async function refreshAdminView(){
       </div>
       ${r.live ? `<div class="note" style="margin-top:6px;">Chófer: ${r.email}</div>` : ''}
     </div>
-  `).join('');
+  `).join('') : '<div class="note">Ninguno de tus choferes está transmitiendo en este momento.</div>';
 }
 
 setInterval(() => { if (adminIdToken && mainAdmin.style.display !== 'none') refreshAdminView(); }, 5000);
