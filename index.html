@@ -120,7 +120,7 @@
       <div class="field-label">Acceso de chófer</div>
       <input type="email" id="loginEmail" placeholder="correo">
       <input type="password" id="loginPassword" placeholder="contraseña">
-      <input type="text" id="loginAdminCode" placeholder="Código de administrador (te lo da tu empresa)">
+      <input type="text" id="loginAdminCode" placeholder="Código de administrador (opcional, solo si te registraste vos mismo)">
       <button class="btn btn-start" id="btnLogin">Entrar</button>
       <div class="err" id="loginError" style="display:none;"></div>
     </div>
@@ -224,9 +224,20 @@
     <div id="adminContent" style="display:none;">
       <div class="card ticket">
         <div class="stub-tag">TU CÓDIGO</div>
-        <div class="field-label">Compartí este código con tus choferes</div>
-        <div id="adminOwnCode" style="font-family:'IBM Plex Mono',monospace;font-size:15px;color:var(--gold);word-break:break-all;"></div>
-        <div class="note" style="margin-top:8px;">Cada chofer debe escribir este código al iniciar sesión, para quedar vinculado a tu cuenta.</div>
+        <div class="field-label" id="btnToggleAdminCode" style="cursor:pointer;">Tu código de administrador ▾</div>
+        <div id="adminCodeBody" style="display:none;">
+          <div id="adminOwnCode" style="font-family:'IBM Plex Mono',monospace;font-size:15px;color:var(--gold);word-break:break-all;margin-top:6px;"></div>
+          <div class="note" style="margin-top:8px;">Este código solo hace falta si un chofer quiere crear su propia cuenta por su lado. Si vos creás las cuentas desde aquí abajo, no necesitás compartirlo.</div>
+        </div>
+      </div>
+
+      <div class="field-label" style="margin-top:20px;">Crear cuenta de chofer</div>
+      <div class="card" style="padding:16px;">
+        <input type="email" id="newChoferEmail" placeholder="correo del chofer">
+        <input type="text" id="newChoferPassword" placeholder="contraseña (mínimo 6 caracteres)">
+        <button class="btn btn-start" id="btnCreateChofer" style="margin-top:2px;">Crear chofer</button>
+        <div class="err" id="createChoferError" style="display:none;"></div>
+        <div class="note" id="createChoferSuccess" style="display:none;color:var(--teal);"></div>
       </div>
 
       <div class="field-label" style="margin-top:20px;">Tus choferes registrados</div>
@@ -234,7 +245,7 @@
 
       <div class="field-label" style="margin-top:20px;">Rutas en vivo (solo tus choferes)</div>
       <div id="adminRoutesList"></div>
-      <div class="note">Se actualiza cada pocos segundos. Para crear, bloquear o eliminar cuentas de chófer o pasajero, hacelo desde Firebase Console → Authentication → Users.</div>
+      <div class="note">Se actualiza cada pocos segundos. Para bloquear o eliminar cuentas, hacelo desde Firebase Console → Authentication → Users.</div>
     </div>
   </main>
 </div>
@@ -267,11 +278,6 @@ document.getElementById('btnLogin').onclick = () => {
     loginError.textContent = 'Escribí correo y contraseña.';
     return;
   }
-  if (!adminCode){
-    loginError.style.display = 'block';
-    loginError.textContent = 'Escribí el código de administrador que te dio tu empresa.';
-    return;
-  }
 
   fetch(`https://identitytoolkit.googleapis.com/v1/accounts:signInWithPassword?key=${API_KEY}`, {
     method: "POST",
@@ -287,10 +293,13 @@ document.getElementById('btnLogin').onclick = () => {
       loginCard.style.display = 'none';
       choferPanel.style.display = 'block';
       loadRoutes(routeSelectChofer.value);
+      // Si tu cuenta ya la creó tu administrador, no hace falta el código: solo actualizamos el correo.
+      // Si escribiste un código (por ejemplo, te registraste vos mismo con "Crear cuenta"), lo guardamos también.
+      const body = adminCode ? { email: data.email, adminUid: adminCode } : { email: data.email };
       fetch(`${DB_URL}/choferes/${driverUid}.json?auth=${idToken}`, {
-        method: "PUT",
+        method: "PATCH",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ email: data.email, adminUid: adminCode })
+        body: JSON.stringify(body)
       }).catch(() => {});
     })
     .catch(err => {
@@ -474,6 +483,69 @@ async function refreshAdminView(){
 }
 
 setInterval(() => { if (adminIdToken && mainAdmin.style.display !== 'none') refreshAdminView(); }, 5000);
+
+const btnToggleAdminCode = document.getElementById('btnToggleAdminCode');
+const adminCodeBody = document.getElementById('adminCodeBody');
+btnToggleAdminCode.onclick = () => {
+  const open = adminCodeBody.style.display === 'block';
+  adminCodeBody.style.display = open ? 'none' : 'block';
+  btnToggleAdminCode.textContent = open ? 'Tu código de administrador ▾' : 'Tu código de administrador ▴';
+};
+
+document.getElementById('btnCreateChofer').onclick = async () => {
+  const emailInput = document.getElementById('newChoferEmail');
+  const passwordInput = document.getElementById('newChoferPassword');
+  const errorEl = document.getElementById('createChoferError');
+  const successEl = document.getElementById('createChoferSuccess');
+  errorEl.style.display = 'none';
+  successEl.style.display = 'none';
+
+  const email = emailInput.value.trim();
+  const password = passwordInput.value;
+
+  if (!email || !password){
+    errorEl.style.display = 'block';
+    errorEl.textContent = 'Escribí correo y contraseña para el chofer.';
+    return;
+  }
+  if (password.length < 6){
+    errorEl.style.display = 'block';
+    errorEl.textContent = 'La contraseña debe tener al menos 6 caracteres.';
+    return;
+  }
+
+  try{
+    const res = await fetch(`https://identitytoolkit.googleapis.com/v1/accounts:signUp?key=${API_KEY}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ email, password, returnSecureToken: true })
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error ? data.error.message : "Error desconocido");
+
+    // El chofer recién creado guarda su propio perfil, ya vinculado a este administrador
+    await fetch(`${DB_URL}/choferes/${data.localId}.json?auth=${data.idToken}`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ email, adminUid: adminOwnUid })
+    });
+
+    successEl.style.display = 'block';
+    successEl.textContent = `Cuenta creada. Compartile al chofer: correo ${email} y la contraseña que escribiste.`;
+    emailInput.value = '';
+    passwordInput.value = '';
+    refreshAdminView();
+  }catch(e){
+    errorEl.style.display = 'block';
+    if (e.message && e.message.includes('EMAIL_EXISTS')){
+      errorEl.textContent = 'Ese correo ya tiene una cuenta.';
+    } else if (e.message && e.message.includes('WEAK_PASSWORD')){
+      errorEl.textContent = 'La contraseña debe tener al menos 6 caracteres.';
+    } else {
+      errorEl.textContent = 'No se pudo crear la cuenta: ' + e.message;
+    }
+  }
+};
 
 async function firebaseWrite(routeId, data){
   const res = await fetch(`${DB_URL}/ubicaciones/${routeId}.json?auth=${idToken}`, {
