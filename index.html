@@ -233,9 +233,20 @@
 
       <div class="card" style="padding:16px;margin-top:12px;">
         <div class="field-label" style="margin-top:0;">Agregar parada</div>
-        <div class="note" style="margin-top:0;">Parate en el punto exacto (o usá la ubicación actual del dispositivo) y tocá el botón.</div>
+        <div class="note" style="margin-top:0;">Buscá un lugar o tocá directamente el punto exacto en el mapa. También podés usar tu ubicación actual como atajo.</div>
         <input type="text" id="adminNewParadaNombre" placeholder="Nombre de la parada" style="margin-top:8px;">
-        <button class="btn btn-start" id="btnAdminCaptureParada" style="margin-top:0;">📍 Usar mi ubicación actual</button>
+
+        <div style="display:flex;gap:8px;margin-top:8px;">
+          <input type="text" id="adminParadaPlaceSearch" placeholder="Buscar lugar o dirección..." style="margin-bottom:0;flex:1;">
+          <button class="btn btn-start" id="btnAdminParadaSearch" style="margin-top:0;width:auto;padding:0 16px;">Buscar</button>
+        </div>
+        <div id="adminParadaSearchResults" style="margin-top:6px;"></div>
+
+        <div id="adminParadaPickerMap" style="width:100%;height:220px;border-radius:12px;margin-top:10px;background:var(--bg-elevated-2);"></div>
+        <div class="note" style="margin-top:6px;">Tocá el mapa para ajustar el punto exacto.</div>
+
+        <button class="btn btn-start" id="btnAdminCaptureParada" style="margin-top:10px;">📍 Usar mi ubicación actual</button>
+        <button class="btn btn-start" id="btnAdminSaveParadaFromMap" style="margin-top:8px;">Guardar esta parada</button>
         <div id="adminParadaCaptureStatus" style="font-family:'IBM Plex Mono',monospace;font-size:11px;color:var(--text-muted);margin-top:8px;"></div>
       </div>
 
@@ -414,6 +425,10 @@ document.getElementById('btnAdminLogin').onclick = () => {
       adminLoginCard.style.display = 'none';
       adminContent.style.display = 'block';
       loadRoutes().then(() => { refreshAdminView(); renderAdminParadasSelect(); renderAdminParadasList(); });
+      setTimeout(() => {
+        initAdminParadaPickerMap();
+        adminParadaPickerMap.invalidateSize();
+      }, 50);
     })
     .catch(err => {
       adminAuthError.style.display = 'block';
@@ -577,7 +592,79 @@ btnAdminDeleteRoute.onclick = async () => {
   }
 };
 
+let adminParadaPickerMap = null;
+let adminParadaMarker = null;
+
+function initAdminParadaPickerMap(){
+  if (adminParadaPickerMap) return;
+  adminParadaPickerMap = L.map('adminParadaPickerMap', { zoomControl: true, attributionControl: true }).setView([9.8800, -83.9600], 12);
+  L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', { maxZoom: 18, attribution: '© OpenStreetMap' }).addTo(adminParadaPickerMap);
+  adminParadaMarker = L.marker([9.8800, -83.9600], { draggable: true }).addTo(adminParadaPickerMap);
+  adminParadaPickerMap.on('click', (e) => {
+    adminParadaMarker.setLatLng(e.latlng);
+  });
+}
+
 document.getElementById('btnAdminCaptureParada').onclick = () => {
+  const statusEl = document.getElementById('adminParadaCaptureStatus');
+  if (!navigator.geolocation){
+    statusEl.textContent = 'Este dispositivo no soporta GPS.';
+    statusEl.style.color = '#D98B6F';
+    return;
+  }
+  statusEl.textContent = 'Obteniendo tu ubicación...';
+  statusEl.style.color = '';
+  navigator.geolocation.getCurrentPosition(
+    (pos) => {
+      const latlng = [pos.coords.latitude, pos.coords.longitude];
+      adminParadaMarker.setLatLng(latlng);
+      adminParadaPickerMap.setView(latlng, 17);
+      statusEl.textContent = 'Marcador movido a tu ubicación. Revisá el mapa y tocá "Guardar esta parada".';
+      statusEl.style.color = 'var(--teal)';
+    },
+    (err) => {
+      statusEl.textContent = 'Error de ubicación: ' + err.message;
+      statusEl.style.color = '#D98B6F';
+    },
+    { enableHighAccuracy: true, timeout: 15000 }
+  );
+};
+
+document.getElementById('btnAdminParadaSearch').onclick = async () => {
+  const query = document.getElementById('adminParadaPlaceSearch').value.trim();
+  const resultsEl = document.getElementById('adminParadaSearchResults');
+  const statusEl = document.getElementById('adminParadaCaptureStatus');
+  if (!query){
+    resultsEl.innerHTML = '';
+    return;
+  }
+  resultsEl.innerHTML = '<div class="note" style="margin-top:0;">Buscando...</div>';
+  try{
+    const res = await fetch(`https://nominatim.openstreetmap.org/search?format=json&limit=5&q=${encodeURIComponent(query)}`);
+    const results = await res.json();
+    if (!results.length){
+      resultsEl.innerHTML = '<div class="note" style="margin-top:0;">Sin resultados. Probá con otro nombre, o tocá directo el mapa.</div>';
+      return;
+    }
+    resultsEl.innerHTML = results.map((r, i) => `
+      <div class="searchResultItem" data-lat="${r.lat}" data-lon="${r.lon}" style="padding:8px 10px;background:var(--bg-elevated-2);border-radius:8px;margin-top:4px;font-size:13px;cursor:pointer;">${r.display_name}</div>
+    `).join('');
+    resultsEl.querySelectorAll('.searchResultItem').forEach(item => {
+      item.onclick = () => {
+        const latlng = [parseFloat(item.dataset.lat), parseFloat(item.dataset.lon)];
+        adminParadaMarker.setLatLng(latlng);
+        adminParadaPickerMap.setView(latlng, 17);
+        resultsEl.innerHTML = '';
+        statusEl.textContent = 'Marcador movido al resultado buscado. Ajustalo en el mapa si hace falta y guardá.';
+        statusEl.style.color = 'var(--teal)';
+      };
+    });
+  }catch(e){
+    resultsEl.innerHTML = '<div class="note" style="margin-top:0;">No se pudo buscar. Probá tocando el mapa directamente.</div>';
+  }
+};
+
+document.getElementById('btnAdminSaveParadaFromMap').onclick = async () => {
   const nombreInput = document.getElementById('adminNewParadaNombre');
   const statusEl = document.getElementById('adminParadaCaptureStatus');
   const nombre = nombreInput.value.trim();
@@ -593,40 +680,27 @@ document.getElementById('btnAdminCaptureParada').onclick = () => {
     statusEl.style.color = '#D98B6F';
     return;
   }
-  if (!navigator.geolocation){
-    statusEl.textContent = 'Este dispositivo no soporta GPS.';
+
+  const pos = adminParadaMarker.getLatLng();
+  const ruta = ROUTES.find(r => r.id === routeId);
+  const paradasActuales = (ruta && ruta.paradas) ? ruta.paradas.filter(p => typeof p === 'object' && p.lat != null) : [];
+  const nuevaLista = paradasActuales.concat([{ nombre, lat: pos.lat, lng: pos.lng }]);
+
+  try{
+    await fetch(`${DB_URL}/rutas/${routeId}/paradas.json?auth=${adminIdToken}`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(nuevaLista)
+    });
+    await loadRoutes();
+    renderAdminParadasList();
+    nombreInput.value = '';
+    statusEl.textContent = 'Parada agregada: ' + nombre;
+    statusEl.style.color = 'var(--teal)';
+  }catch(e){
+    statusEl.textContent = 'No se pudo guardar: ' + e.message;
     statusEl.style.color = '#D98B6F';
-    return;
   }
-  statusEl.textContent = 'Obteniendo ubicación...';
-  statusEl.style.color = '';
-  navigator.geolocation.getCurrentPosition(
-    async (pos) => {
-      const ruta = ROUTES.find(r => r.id === routeId);
-      const paradasActuales = (ruta && ruta.paradas) ? ruta.paradas.filter(p => typeof p === 'object' && p.lat != null) : [];
-      const nuevaLista = paradasActuales.concat([{ nombre, lat: pos.coords.latitude, lng: pos.coords.longitude }]);
-      try{
-        await fetch(`${DB_URL}/rutas/${routeId}/paradas.json?auth=${adminIdToken}`, {
-          method: "PUT",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(nuevaLista)
-        });
-        await loadRoutes();
-        renderAdminParadasList();
-        nombreInput.value = '';
-        statusEl.textContent = 'Parada agregada: ' + nombre;
-        statusEl.style.color = 'var(--teal)';
-      }catch(e){
-        statusEl.textContent = 'No se pudo guardar: ' + e.message;
-        statusEl.style.color = '#D98B6F';
-      }
-    },
-    (err) => {
-      statusEl.textContent = 'Error de ubicación: ' + err.message;
-      statusEl.style.color = '#D98B6F';
-    },
-    { enableHighAccuracy: true, timeout: 15000 }
-  );
 };
 
 const btnToggleAdminCode = document.getElementById('btnToggleAdminCode');
@@ -872,7 +946,10 @@ tabPasajero.onclick = () => {
 tabAdmin.onclick = () => {
   activateTab(tabAdmin);
   mainAdmin.style.display = 'block';
-  if (adminIdToken) refreshAdminView();
+  if (adminIdToken){
+    refreshAdminView();
+    setTimeout(() => { if (adminParadaPickerMap) adminParadaPickerMap.invalidateSize(); }, 50);
+  }
 };
 
 let watchId = null;
