@@ -98,6 +98,7 @@
 
   .bus-marker{display:flex;align-items:center;justify-content:center;width:34px;height:34px;border-radius:50%;background:var(--gold);box-shadow:0 0 0 4px rgba(217,164,65,0.28);font-size:16px;position:relative;}
   .bus-marker::after{content:'';position:absolute;inset:-8px;border-radius:50%;border:2px solid var(--gold);animation:pulse 2s ease-out infinite;}
+  .parada-marker{display:flex;align-items:center;justify-content:center;width:26px;height:26px;border-radius:50%;background:var(--teal);box-shadow:0 0 0 3px rgba(79,169,140,0.28);font-size:14px;}
 
   ::-webkit-scrollbar{width:0;}
 </style>
@@ -818,7 +819,7 @@ function populateSelect(sel, keepValue, withAddOption){
 
 async function loadRoutes(selectIdToKeep){
   try{
-    const res = await fetch(`${DB_URL}/rutas.json`);
+    const res = await fetch(`${DB_URL}/rutas.json`, { cache: 'no-store' });
     if (!res.ok) throw new Error("HTTP " + res.status);
     const data = await res.json();
     if (data){
@@ -842,7 +843,11 @@ async function loadRoutes(selectIdToKeep){
   }
   populateSelect(routeSelectChofer, true, true);
   if (selectIdToKeep) routeSearchPasajero.value = '';
-  renderFilteredPassengerOptions();
+  if (routeSearchPasajero.value.trim()){
+    renderFilteredPassengerOptions();
+  } else {
+    populateSelect(routeSelectPasajero, true, false);
+  }
   if (selectIdToKeep){
     routeSelectChofer.value = selectIdToKeep;
     routeSelectPasajero.value = selectIdToKeep;
@@ -1124,13 +1129,8 @@ function updateParadasDisplay(){
   }
 
   paradasConCoords.forEach((p, i) => {
-    const marker = L.circleMarker([p.lat, p.lng], {
-      radius: 7,
-      color: '#4FA98C',
-      weight: 2,
-      fillColor: '#12312A',
-      fillOpacity: 1
-    }).addTo(map);
+    const icon = L.divIcon({ className: '', html: '<div class="parada-marker">🚏</div>', iconSize: [26,26], iconAnchor: [13,26] });
+    const marker = L.marker([p.lat, p.lng], { icon }).addTo(map);
     marker.bindPopup(`<b>${i+1}. ${p.nombre}</b>`);
     paradaMarkers.push(marker);
   });
