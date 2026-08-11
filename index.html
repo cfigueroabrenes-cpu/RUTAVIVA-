@@ -156,10 +156,10 @@
           <div id="btnToggleReportMenu" style="text-align:center;font-family:'IBM Plex Mono',monospace;font-size:12px;color:var(--gold);cursor:pointer;text-decoration:underline;text-underline-offset:3px;">⚠️ Reportar algo en el camino</div>
           <div id="reportMenu" style="display:none;margin-top:10px;">
             <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;">
-              <button class="btn btn-start reportOptionBtn" data-tipo="accidente" style="margin-top:0;background:#C1633D;color:var(--text-light);">🚑 Accidente</button>
+              <button class="btn btn-start reportOptionBtn" data-tipo="accidente" style="margin-top:0;background:#C1633D;color:var(--text-light);">🚑 Accidente en ruta</button>
               <button class="btn btn-start reportOptionBtn" data-tipo="transito" style="margin-top:0;background:#D9A441;">🚗 Tránsito</button>
-              <button class="btn btn-start reportOptionBtn" data-tipo="obras" style="margin-top:0;background:#B27F2A;">🚧 Obras</button>
-              <button class="btn btn-start reportOptionBtn" data-tipo="cierre" style="margin-top:0;background:#8FA79B;color:var(--text-dark);">⛔ Cierre de vía</button>
+              <button class="btn btn-start reportOptionBtn" data-tipo="obras" style="margin-top:0;background:#B27F2A;">🔧 Problema mecánico</button>
+              <button class="btn btn-start reportOptionBtn" data-tipo="cierre" style="margin-top:0;background:#8FA79B;color:var(--text-dark);">💥 Colisión</button>
             </div>
             <div id="reportStatus" style="font-family:'IBM Plex Mono',monospace;font-size:11px;color:var(--text-muted);margin-top:8px;text-align:center;"></div>
           </div>
@@ -273,6 +273,11 @@
       <div class="field-label" style="margin-top:20px;">Rutas en vivo (solo tus choferes)</div>
       <div id="adminRoutesList"></div>
       <div class="note">Se actualiza cada pocos segundos. Para bloquear o eliminar cuentas, hacelo desde Firebase Console → Authentication → Users.</div>
+
+      <div class="field-label" style="margin-top:20px;">Métricas de viajes</div>
+      <select id="adminRouteSelectMetricas"></select>
+      <div id="adminMetricasResumen" style="margin-top:10px;"></div>
+      <div id="adminMetricasHistorial" style="margin-top:10px;"></div>
     </div>
   </main>
 </div>
@@ -442,7 +447,7 @@ document.getElementById('btnAdminLogin').onclick = () => {
       document.getElementById('adminOwnCode').textContent = adminOwnUid;
       adminLoginCard.style.display = 'none';
       adminContent.style.display = 'block';
-      loadRoutes().then(() => { refreshAdminView(); renderAdminParadasSelect(); renderAdminParadasList(); });
+      loadRoutes().then(() => { refreshAdminView(); renderAdminParadasSelect(); renderAdminParadasList(); renderAdminMetricasSelect(); renderAdminMetricas(); });
       setTimeout(() => {
         initAdminParadaPickerMap();
         adminParadaPickerMap.invalidateSize();
@@ -505,13 +510,24 @@ async function refreshAdminView(){
 
   const rows = await Promise.all(ROUTES.map(async (ruta) => {
     try{
-      const res = await fetch(`${DB_URL}/ubicaciones/${ruta.id}.json`);
+      const res = await fetch(`${DB_URL}/ubicaciones/${ruta.id}.json`, { cache: 'no-store' });
       const data = res.ok ? await res.json() : null;
       if (!data || !misChoferesUids.includes(data.choferUid)) return { ruta, live: false, mine: false };
       const ageSeconds = (Date.now() - data.timestamp) / 1000;
       const isLive = data.active && ageSeconds < 20;
       const email = (choferesMap[data.choferUid] && choferesMap[data.choferUid].email) || 'desconocido';
-      return { ruta, live: isLive, mine: true, email, ageSeconds };
+      let semaforo = null;
+      if (isLive && data.salioOrigenTs){
+        const promedio = await getPromedioDuracion(ruta.id);
+        if (promedio){
+          const elapsedMin = (Date.now() - data.salioOrigenTs) / 60000;
+          const diffMin = elapsedMin - promedio;
+          if (diffMin > 3) semaforo = { emoji: '🔴', texto: 'Retrasado' };
+          else if (diffMin < -3) semaforo = { emoji: '🟡', texto: 'Adelantado' };
+          else semaforo = { emoji: '🟢', texto: 'A tiempo' };
+        }
+      }
+      return { ruta, live: isLive, mine: true, email, ageSeconds, semaforo };
     }catch(e){
       return { ruta, live: false, mine: false };
     }
@@ -525,11 +541,100 @@ async function refreshAdminView(){
         <span class="live-badge ${r.live ? 'on' : 'off'}">${r.live ? 'En vivo' : 'Sin señal'}</span>
       </div>
       ${r.live ? `<div class="note" style="margin-top:6px;">Chófer: ${r.email}</div>` : ''}
+      ${r.semaforo ? `<div class="note" style="margin-top:4px;">${r.semaforo.emoji} ${r.semaforo.texto}</div>` : ''}
     </div>
   `).join('') : '<div class="note">Ninguno de tus choferes está transmitiendo en este momento.</div>';
 }
 
+const promedioCache = {};
+async function getPromedioDuracion(routeId){
+  if (promedioCache[routeId] !== undefined) return promedioCache[routeId];
+  try{
+    const res = await fetch(`${DB_URL}/viajes/${routeId}.json?auth=${adminIdToken}`, { cache: 'no-store' });
+    if (!res.ok){ promedioCache[routeId] = null; return null; }
+    const data = await res.json();
+    if (!data){ promedioCache[routeId] = null; return null; }
+    const duraciones = Object.values(data).map(v => v.duracionMin).filter(d => typeof d === 'number');
+    if (!duraciones.length){ promedioCache[routeId] = null; return null; }
+    const promedio = duraciones.reduce((a,b) => a+b, 0) / duraciones.length;
+    promedioCache[routeId] = promedio;
+    return promedio;
+  }catch(e){
+    promedioCache[routeId] = null;
+    return null;
+  }
+}
+
 setInterval(() => { if (adminIdToken && mainAdmin.style.display !== 'none') refreshAdminView(); }, 5000);
+
+const adminRouteSelectMetricas = document.getElementById('adminRouteSelectMetricas');
+
+function renderAdminMetricasSelect(){
+  adminRouteSelectMetricas.innerHTML = ROUTES.map(r => `<option value="${r.id}">${r.name}</option>`).join('');
+}
+
+async function renderAdminMetricas(){
+  const routeId = adminRouteSelectMetricas.value;
+  const resumenEl = document.getElementById('adminMetricasResumen');
+  const historialEl = document.getElementById('adminMetricasHistorial');
+  if (!routeId){ resumenEl.innerHTML = ''; historialEl.innerHTML = ''; return; }
+
+  resumenEl.innerHTML = '<div class="note">Cargando...</div>';
+  historialEl.innerHTML = '';
+
+  let viajes = [];
+  try{
+    const res = await fetch(`${DB_URL}/viajes/${routeId}.json?auth=${adminIdToken}`, { cache: 'no-store' });
+    if (res.ok){
+      const data = await res.json();
+      if (data){
+        viajes = Object.values(data).sort((a,b) => b.fin - a.fin);
+      }
+    }
+  }catch(e){ /* silencioso */ }
+
+  if (!viajes.length){
+    resumenEl.innerHTML = '<div class="note">Todavía no hay viajes completados registrados en esta ruta.</div>';
+    return;
+  }
+
+  const promedio = viajes.reduce((a,v) => a + v.duracionMin, 0) / viajes.length;
+  promedioCache[routeId] = promedio;
+
+  resumenEl.innerHTML = `
+    <div class="card ticket">
+      <div class="stub-tag">PROMEDIO</div>
+      <div style="font-family:'Fraunces',serif;font-weight:600;font-size:20px;">${Math.round(promedio)} min</div>
+      <div class="note" style="margin-top:2px;">Basado en ${viajes.length} viaje${viajes.length === 1 ? '' : 's'} completado${viajes.length === 1 ? '' : 's'}</div>
+    </div>
+  `;
+
+  let choferesMap = {};
+  try{
+    const res = await fetch(`${DB_URL}/choferes.json?auth=${adminIdToken}`);
+    if (res.ok){ const data = await res.json(); if (data) choferesMap = data; }
+  }catch(e){ /* seguimos sin nombres */ }
+
+  historialEl.innerHTML = viajes.slice(0, 20).map(v => {
+    const diffMin = v.duracionMin - promedio;
+    let semaforo = { emoji: '🟢', texto: 'A tiempo' };
+    if (diffMin > 3) semaforo = { emoji: '🔴', texto: 'Retrasado' };
+    else if (diffMin < -3) semaforo = { emoji: '🟡', texto: 'Adelantado' };
+    const email = (choferesMap[v.choferUid] && choferesMap[v.choferUid].email) || 'desconocido';
+    const fecha = new Date(v.fin).toLocaleDateString('es-CR', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' });
+    return `
+      <div style="display:flex;justify-content:space-between;align-items:center;background:var(--bg-elevated-2);border-radius:8px;padding:10px 12px;margin-bottom:6px;">
+        <div>
+          <div style="font-size:13px;">${email}</div>
+          <div class="note" style="margin-top:2px;">${fecha} · ${v.duracionMin} min</div>
+        </div>
+        <div style="font-size:12px;">${semaforo.emoji} ${semaforo.texto}</div>
+      </div>
+    `;
+  }).join('');
+}
+
+adminRouteSelectMetricas.onchange = renderAdminMetricas;
 
 const adminRouteSelectParadas = document.getElementById('adminRouteSelectParadas');
 
@@ -978,6 +1083,8 @@ let watchId = null;
 let tripActive = false;
 let writeInterval = null;
 let lastPosition = null;
+let salioOrigenTs = null;
+let ultimoViajeLogueado = false;
 
 const choferPulse = document.getElementById('choferPulse');
 const choferStatusText = document.getElementById('choferStatusText');
@@ -995,6 +1102,38 @@ function showChoferError(msg){
 }
 function hideChoferError(){ choferError.style.display = 'none'; }
 
+async function checkTerminales(pos){
+  const routeId = routeSelectChofer.value;
+  const ruta = ROUTES.find(r => r.id === routeId);
+  if (!ruta || !ruta.paradas) return;
+  const paradasConCoords = ruta.paradas.filter(p => typeof p === 'object' && p.lat != null);
+  if (paradasConCoords.length < 2) return;
+
+  const origen = paradasConCoords[0];
+  const destino = paradasConCoords[paradasConCoords.length - 1];
+  const distOrigen = distanciaMetros(pos.coords.latitude, pos.coords.longitude, origen.lat, origen.lng);
+  const distDestino = distanciaMetros(pos.coords.latitude, pos.coords.longitude, destino.lat, destino.lng);
+
+  if (distOrigen < 100 && !salioOrigenTs){
+    salioOrigenTs = Date.now();
+    ultimoViajeLogueado = false;
+  }
+
+  if (distDestino < 100 && salioOrigenTs && !ultimoViajeLogueado){
+    const fin = Date.now();
+    const duracionMin = Math.round((fin - salioOrigenTs) / 60000);
+    ultimoViajeLogueado = true;
+    try{
+      await fetch(`${DB_URL}/viajes/${routeId}.json?auth=${idToken}`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ choferUid: driverUid, inicio: salioOrigenTs, fin, duracionMin })
+      });
+    }catch(e){ /* silencioso */ }
+    salioOrigenTs = null;
+  }
+}
+
 async function writeBusLocation(){
   if (!lastPosition || !tripActive || !idToken) return;
   const routeId = routeSelectChofer.value;
@@ -1005,7 +1144,8 @@ async function writeBusLocation(){
     speed: lastPosition.coords.speed,
     timestamp: Date.now(),
     active: true,
-    choferUid: driverUid
+    choferUid: driverUid,
+    salioOrigenTs: salioOrigenTs
   };
   try{
     await firebaseWrite(routeId, payload);
@@ -1036,6 +1176,8 @@ function startTrip(){
   }
   routeSelectChofer.disabled = true;
   tripActive = true;
+  salioOrigenTs = null;
+  ultimoViajeLogueado = false;
   choferPulse.classList.add('on');
   choferStatusText.textContent = 'Viaje activo';
   choferStatusSub.textContent = 'Transmitiendo ubicación en vivo';
@@ -1050,6 +1192,7 @@ function startTrip(){
       metricLng.textContent = pos.coords.longitude.toFixed(5);
       metricAcc.textContent = Math.round(pos.coords.accuracy) + ' m';
       metricUpdated.textContent = 'ahora';
+      checkTerminales(pos);
     },
     (err) => {
       showChoferError('No se pudo obtener la ubicación: ' + err.message + '. Revisá los permisos de ubicación del navegador.');
@@ -1164,10 +1307,10 @@ async function refreshPassengerData(){
 }
 
 const REPORT_ICONS = {
-  accidente: { emoji: '🚑', color: '#C1633D', nombre: 'Accidente' },
+  accidente: { emoji: '🚑', color: '#C1633D', nombre: 'Accidente en ruta' },
   transito: { emoji: '🚗', color: '#D9A441', nombre: 'Tránsito' },
-  obras: { emoji: '🚧', color: '#B27F2A', nombre: 'Obras' },
-  cierre: { emoji: '⛔', color: '#8FA79B', nombre: 'Cierre de vía' }
+  obras: { emoji: '🔧', color: '#B27F2A', nombre: 'Problema mecánico' },
+  cierre: { emoji: '💥', color: '#8FA79B', nombre: 'Colisión' }
 };
 let reportMarkers = [];
 
