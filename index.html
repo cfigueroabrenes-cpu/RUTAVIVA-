@@ -101,6 +101,11 @@
   .parada-marker{display:flex;align-items:center;justify-content:center;width:26px;height:26px;border-radius:50%;background:var(--teal);box-shadow:0 0 0 3px rgba(79,169,140,0.28);font-size:14px;}
 
   ::-webkit-scrollbar{width:0;}
+
+  .toast{position:fixed;top:16px;left:50%;transform:translateX(-50%) translateY(-20px);max-width:440px;width:calc(100% - 32px);background:var(--bg-elevated-2);border:1px solid rgba(217,164,65,0.4);border-radius:12px;padding:12px 16px;box-shadow:0 6px 20px rgba(0,0,0,0.4);z-index:9999;opacity:0;transition:opacity .25s ease, transform .25s ease;pointer-events:none;}
+  .toast.show{opacity:1;transform:translateX(-50%) translateY(0);}
+  .toast .toast-title{font-family:'Fraunces',serif;font-weight:600;font-size:14px;}
+  .toast .toast-sub{font-family:'IBM Plex Mono',monospace;font-size:11px;color:var(--text-muted);margin-top:2px;}
 </style>
 </head>
 <body>
@@ -185,6 +190,9 @@
     </div>
 
     <div id="passengerContent" style="display:none;">
+      <div style="text-align:right;">
+        <span id="btnPassengerNotif" onclick="pedirPermisoNotificaciones(this)" style="font-family:'IBM Plex Mono',monospace;font-size:11px;color:var(--text-muted);cursor:pointer;">🔕 Activar avisos de reportes</span>
+      </div>
       <div class="field-label">Ruta a seguir</div>
       <input type="text" id="routeSearchPasajero" placeholder="Buscar ruta...">
       <select id="routeSelectPasajero"></select>
@@ -221,6 +229,9 @@
     </div>
 
     <div id="adminContent" style="display:none;">
+      <div style="text-align:right;">
+        <span id="btnAdminNotif" onclick="pedirPermisoNotificaciones(this)" style="font-family:'IBM Plex Mono',monospace;font-size:11px;color:var(--text-muted);cursor:pointer;">🔕 Activar avisos de reportes</span>
+      </div>
       <div class="card ticket">
         <div class="stub-tag">TU CÓDIGO</div>
         <div class="field-label" id="btnToggleAdminCode" style="cursor:pointer;">Tu código de administrador ▾</div>
@@ -287,6 +298,37 @@ const API_KEY = "AIzaSyD73lQ-qcLcEHZjc_IdC-6tkPYBgMMcdiE";
 const DB_URL = "https://rutaviva-9fb93-default-rtdb.firebaseio.com";
 let idToken = null;
 let driverUid = null;
+
+// ================= Avisos (toast + notificación del navegador) =================
+function showToast(titulo, subtitulo){
+  const el = document.createElement('div');
+  el.className = 'toast';
+  el.innerHTML = `<div class="toast-title">${titulo}</div><div class="toast-sub">${subtitulo}</div>`;
+  document.body.appendChild(el);
+  requestAnimationFrame(() => el.classList.add('show'));
+  setTimeout(() => {
+    el.classList.remove('show');
+    setTimeout(() => el.remove(), 300);
+  }, 6000);
+
+  if (window.Notification && Notification.permission === 'granted'){
+    try{ new Notification(titulo, { body: subtitulo }); }catch(e){ /* silencioso */ }
+  }
+}
+
+function pedirPermisoNotificaciones(btn){
+  if (!window.Notification){
+    if (btn) btn.textContent = 'Tu navegador no soporta notificaciones';
+    return;
+  }
+  if (Notification.permission === 'granted'){
+    if (btn) btn.textContent = '🔔 Notificaciones activadas';
+    return;
+  }
+  Notification.requestPermission().then(perm => {
+    if (btn) btn.textContent = perm === 'granted' ? '🔔 Notificaciones activadas' : 'No se activaron (revisá permisos del navegador)';
+  });
+}
 
 const authLineEl = document.getElementById('authLine');
 function setAuthLine(text, isError){
@@ -566,6 +608,48 @@ async function getPromedioDuracion(routeId){
 }
 
 setInterval(() => { if (adminIdToken && mainAdmin.style.display !== 'none') refreshAdminView(); }, 5000);
+
+let seenReportIdsAdmin = {}; // routeId -> Set de ids ya vistos (null = todavía no cargamos)
+
+async function checkAdminNewReports(){
+  if (!adminIdToken) return;
+  let choferesMap = {};
+  try{
+    const res = await fetch(`${DB_URL}/choferes.json?auth=${adminIdToken}`, { cache: 'no-store' });
+    if (res.ok){ const data = await res.json(); if (data) choferesMap = data; }
+  }catch(e){ return; }
+
+  const misChoferesUids = Object.keys(choferesMap).filter(uid => choferesMap[uid].adminUid === adminOwnUid);
+  if (!misChoferesUids.length) return;
+
+  for (const ruta of ROUTES){
+    try{
+      const res = await fetch(`${DB_URL}/reportes/${ruta.id}.json`, { cache: 'no-store' });
+      if (!res.ok) continue;
+      const data = await res.json();
+      if (!data) continue;
+
+      if (seenReportIdsAdmin[ruta.id] === undefined) seenReportIdsAdmin[ruta.id] = null;
+      const esPrimeraCarga = seenReportIdsAdmin[ruta.id] === null;
+      const yaVistos = esPrimeraCarga ? new Set() : seenReportIdsAdmin[ruta.id];
+      const vistosAhora = new Set();
+
+      Object.entries(data).forEach(([id, r]) => {
+        vistosAhora.add(id);
+        if (!misChoferesUids.includes(r.choferUid)) return;
+        if (!esPrimeraCarga && !yaVistos.has(id)){
+          const info = REPORT_ICONS[r.tipo] || { emoji: '⚠️', nombre: r.tipo };
+          const email = (choferesMap[r.choferUid] && choferesMap[r.choferUid].email) || 'un chófer';
+          showToast(`${info.emoji} ${info.nombre}`, `Reportado por ${email} en ${ruta.name}.`);
+        }
+      });
+
+      seenReportIdsAdmin[ruta.id] = vistosAhora;
+    }catch(e){ /* seguimos con la próxima ruta */ }
+  }
+}
+
+setInterval(() => { if (adminIdToken && mainAdmin.style.display !== 'none') checkAdminNewReports(); }, 8000);
 
 const adminRouteSelectMetricas = document.getElementById('adminRouteSelectMetricas');
 
@@ -1325,17 +1409,24 @@ const REPORT_ICONS = {
   cierre: { emoji: '💥', color: '#8FA79B', nombre: 'Colisión' }
 };
 let reportMarkers = [];
+let seenReportIdsPasajero = {}; // routeId -> Set de ids ya vistos
 
 async function refreshReportMarkers(routeId){
   reportMarkers.forEach(m => map.removeLayer(m));
   reportMarkers = [];
+  if (!seenReportIdsPasajero[routeId]) seenReportIdsPasajero[routeId] = null; // null = todavía no cargamos, no avisar la primera vez
   try{
     const res = await fetch(`${DB_URL}/reportes/${routeId}.json`, { cache: 'no-store' });
     if (!res.ok) return;
     const data = await res.json();
     if (!data) return;
     const treintaMinAtras = Date.now() - (30 * 60 * 1000);
-    Object.values(data).forEach(r => {
+    const esPrimeraCarga = seenReportIdsPasajero[routeId] === null;
+    const yaVistos = esPrimeraCarga ? new Set() : seenReportIdsPasajero[routeId];
+    const vistosAhora = new Set();
+
+    Object.entries(data).forEach(([id, r]) => {
+      vistosAhora.add(id);
       if (r.timestamp < treintaMinAtras) return;
       const info = REPORT_ICONS[r.tipo] || { emoji: '⚠️', color: '#D9A441', nombre: r.tipo };
       const icon = L.divIcon({
@@ -1346,7 +1437,13 @@ async function refreshReportMarkers(routeId){
       const marker = L.marker([r.lat, r.lng], { icon }).addTo(map);
       marker.bindPopup(`<b>${info.nombre}</b><br>${timeAgo(r.timestamp)}`);
       reportMarkers.push(marker);
+
+      if (!esPrimeraCarga && !yaVistos.has(id)){
+        showToast(`${info.emoji} ${info.nombre}`, 'Reportado por el chófer en tu ruta, hace un momento.');
+      }
     });
+
+    seenReportIdsPasajero[routeId] = vistosAhora;
   }catch(e){ /* silencioso */ }
 }
 
