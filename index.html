@@ -554,8 +554,8 @@ async function refreshAdminView(){
         if (!res.ok) continue;
         const data = await res.json();
         if (!data) continue;
-        Object.values(data).forEach(r => {
-          if (r.choferUid === uid) reportesDelChofer.push({ ...r, rutaNombre: ruta.name });
+        Object.entries(data).forEach(([id, r]) => {
+          if (r.choferUid === uid) reportesDelChofer.push({ ...r, id, routeId: ruta.id, rutaNombre: ruta.name });
         });
       }catch(e){ /* seguimos con la próxima ruta */ }
     }
@@ -566,9 +566,48 @@ async function refreshAdminView(){
       return;
     }
     panel.innerHTML = reportesDelChofer.slice(0, 10).map(r => {
-      const info = REPORT_ICONS[r.tipo] || { emoji: '⚠️', nombre: r.tipo };
-      return `<div class="note" style="margin-top:4px;">${info.emoji} ${info.nombre} · ${r.rutaNombre} · ${timeAgo(r.timestamp)}</div>`;
+      const info = REPORT_ICONS[r.tipo] || { emoji: '⚠️', color: '#D9A441', nombre: r.tipo };
+      return `
+        <div style="display:flex;justify-content:space-between;align-items:center;background:var(--bg-elevated-2);border-radius:8px;padding:8px 10px;margin-bottom:5px;">
+          <div class="note" style="margin-top:0;">${info.emoji} ${info.nombre} · ${r.rutaNombre} · ${timeAgo(r.timestamp)}</div>
+          <div style="display:flex;gap:10px;white-space:nowrap;">
+            <span class="verReporteEnMapa" data-lat="${r.lat}" data-lng="${r.lng}" data-emoji="${info.emoji}" data-color="${info.color}" style="cursor:pointer;font-size:14px;">🗺️</span>
+            <span class="eliminarReporte" data-routeid="${r.routeId}" data-id="${r.id}" data-uid="${uid}" style="cursor:pointer;color:#D98B6F;font-family:'IBM Plex Mono',monospace;font-size:11px;">Eliminar</span>
+          </div>
+        </div>
+      `;
     }).join('');
+
+    panel.querySelectorAll('.verReporteEnMapa').forEach(el => {
+      el.onclick = () => {
+        const latlng = [parseFloat(el.dataset.lat), parseFloat(el.dataset.lng)];
+        if (!adminParadaPickerMap) return;
+        adminParadaPickerMap.invalidateSize();
+        adminParadaPickerMap.setView(latlng, 17);
+        if (adminReportMarker) adminParadaPickerMap.removeLayer(adminReportMarker);
+        const icon = L.divIcon({
+          className: '',
+          html: `<div style="display:flex;align-items:center;justify-content:center;width:28px;height:28px;border-radius:50%;background:${el.dataset.color};font-size:15px;box-shadow:0 2px 6px rgba(0,0,0,0.35);">${el.dataset.emoji}</div>`,
+          iconSize: [28,28], iconAnchor: [14,14]
+        });
+        adminReportMarker = L.marker(latlng, { icon }).addTo(adminParadaPickerMap);
+        document.getElementById('adminParadaPickerMap').scrollIntoView({ behavior: 'smooth', block: 'center' });
+      };
+    });
+
+    panel.querySelectorAll('.eliminarReporte').forEach(el => {
+      el.onclick = async () => {
+        if (el.dataset.confirming !== 'yes'){
+          el.dataset.confirming = 'yes';
+          el.textContent = '¿Seguro?';
+          return;
+        }
+        try{
+          await fetch(`${DB_URL}/reportes/${el.dataset.routeid}/${el.dataset.id}.json?auth=${adminIdToken}`, { method: "DELETE" });
+          cargarAlertasDeChofer(el.dataset.uid, email);
+        }catch(e){ /* silencioso */ }
+      };
+    });
   }
 
   choferesContainer.querySelectorAll('.choferBellBtn').forEach(bell => {
@@ -867,6 +906,7 @@ btnAdminDeleteRoute.onclick = async () => {
 
 let adminParadaPickerMap = null;
 let adminParadaMarker = null;
+let adminReportMarker = null;
 
 function initAdminParadaPickerMap(){
   if (adminParadaPickerMap) return;
