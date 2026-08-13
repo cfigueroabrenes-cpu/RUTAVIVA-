@@ -460,6 +460,7 @@ btnPassengerLogin.onclick = () => {
 // ================= Admin: login y vista en tiempo real =================
 let adminIdToken = null;
 let adminOwnUid = null;
+let openChoferPanelUid = null;
 
 const adminLoginCard = document.getElementById('adminLoginCard');
 const adminContent = document.getElementById('adminContent');
@@ -527,12 +528,65 @@ async function refreshAdminView(){
 
   choferesContainer.innerHTML = misChoferes.length
     ? misChoferes.map(c => `
-      <div style="display:flex;justify-content:space-between;align-items:center;background:var(--bg-elevated-2);border-radius:8px;padding:10px 12px;margin-bottom:6px;">
-        <div style="font-size:14px;">${c.email}</div>
-        <span data-uid="${c.uid}" class="removeChoferBtn" style="color:#D98B6F;cursor:pointer;font-family:'IBM Plex Mono',monospace;font-size:12px;">Quitar</span>
+      <div style="background:var(--bg-elevated-2);border-radius:8px;padding:10px 12px;margin-bottom:6px;">
+        <div style="display:flex;justify-content:space-between;align-items:center;">
+          <div style="display:flex;align-items:center;gap:8px;">
+            <span data-uid="${c.uid}" data-email="${c.email}" class="choferBellBtn" style="cursor:pointer;font-size:16px;">🔔</span>
+            <div style="font-size:14px;">${c.email}</div>
+          </div>
+          <span data-uid="${c.uid}" class="removeChoferBtn" style="color:#D98B6F;cursor:pointer;font-family:'IBM Plex Mono',monospace;font-size:12px;">Quitar</span>
+        </div>
+        <div class="choferAlertPanel" data-uid="${c.uid}" style="display:none;margin-top:10px;"></div>
       </div>
     `).join('')
     : '<div class="note">Todavía ningún chofer está vinculado a tu cuenta.</div>';
+
+  async function cargarAlertasDeChofer(uid, email){
+    const panel = choferesContainer.querySelector(`.choferAlertPanel[data-uid="${uid}"]`);
+    if (!panel) return;
+    panel.style.display = 'block';
+    panel.innerHTML = '<div class="note" style="margin-top:0;">Cargando alertas...</div>';
+
+    let reportesDelChofer = [];
+    for (const ruta of ROUTES){
+      try{
+        const res = await fetch(`${DB_URL}/reportes/${ruta.id}.json`, { cache: 'no-store' });
+        if (!res.ok) continue;
+        const data = await res.json();
+        if (!data) continue;
+        Object.values(data).forEach(r => {
+          if (r.choferUid === uid) reportesDelChofer.push({ ...r, rutaNombre: ruta.name });
+        });
+      }catch(e){ /* seguimos con la próxima ruta */ }
+    }
+    reportesDelChofer.sort((a,b) => b.timestamp - a.timestamp);
+
+    if (!reportesDelChofer.length){
+      panel.innerHTML = `<div class="note" style="margin-top:0;">${email} no ha enviado reportes.</div>`;
+      return;
+    }
+    panel.innerHTML = reportesDelChofer.slice(0, 10).map(r => {
+      const info = REPORT_ICONS[r.tipo] || { emoji: '⚠️', nombre: r.tipo };
+      return `<div class="note" style="margin-top:4px;">${info.emoji} ${info.nombre} · ${r.rutaNombre} · ${timeAgo(r.timestamp)}</div>`;
+    }).join('');
+  }
+
+  choferesContainer.querySelectorAll('.choferBellBtn').forEach(bell => {
+    bell.onclick = () => {
+      const uid = bell.dataset.uid;
+      const abierto = openChoferPanelUid === uid;
+      openChoferPanelUid = abierto ? null : uid;
+      choferesContainer.querySelectorAll('.choferAlertPanel').forEach(p => p.style.display = 'none');
+      if (!abierto) cargarAlertasDeChofer(uid, bell.dataset.email);
+    };
+  });
+
+  if (openChoferPanelUid && misChoferes.some(c => c.uid === openChoferPanelUid)){
+    const c = misChoferes.find(c => c.uid === openChoferPanelUid);
+    cargarAlertasDeChofer(c.uid, c.email);
+  } else {
+    openChoferPanelUid = null;
+  }
 
   choferesContainer.querySelectorAll('.removeChoferBtn').forEach(btn => {
     btn.onclick = async () => {
