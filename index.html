@@ -525,12 +525,45 @@ async function refreshAdminView(){
   const misChoferes = Object.keys(choferesMap)
     .filter(uid => choferesMap[uid].adminUid === adminOwnUid)
     .map(uid => ({ uid, email: choferesMap[uid].email }));
+  const misChoferesUids = misChoferes.map(c => c.uid);
+
+  const rows = await Promise.all(ROUTES.map(async (ruta) => {
+    try{
+      const res = await fetch(`${DB_URL}/ubicaciones/${ruta.id}.json`, { cache: 'no-store' });
+      const data = res.ok ? await res.json() : null;
+      if (!data || !misChoferesUids.includes(data.choferUid)) return { ruta, live: false, mine: false };
+      const ageSeconds = (Date.now() - data.timestamp) / 1000;
+      const isLive = data.active && ageSeconds < 20;
+      const email = (choferesMap[data.choferUid] && choferesMap[data.choferUid].email) || 'desconocido';
+      let semaforo = null;
+      if (isLive && data.salioOrigenTs){
+        const promedio = await getPromedioDuracion(ruta.id);
+        if (promedio){
+          const elapsedMin = (Date.now() - data.salioOrigenTs) / 60000;
+          const diffMin = elapsedMin - promedio;
+          if (diffMin > 3) semaforo = { emoji: '🔴', texto: 'Retrasado' };
+          else if (diffMin < -3) semaforo = { emoji: '🟡', texto: 'Adelantado' };
+          else semaforo = { emoji: '🟢', texto: 'A tiempo' };
+        }
+      }
+      return { ruta, live: isLive, mine: true, email, ageSeconds, semaforo, lat: data.lat, lng: data.lng, choferUid: data.choferUid };
+    }catch(e){
+      return { ruta, live: false, mine: false };
+    }
+  }));
+
+  const activeChoferMap = {};
+  rows.forEach(r => { if (r.live && r.mine) activeChoferMap[r.choferUid] = true; });
 
   choferesContainer.innerHTML = misChoferes.length
-    ? misChoferes.map(c => `
+    ? misChoferes.map(c => {
+      const conectado = !!activeChoferMap[c.uid];
+      const luz = conectado ? '🟢' : '🔴';
+      return `
       <div style="background:var(--bg-elevated-2);border-radius:8px;padding:10px 12px;margin-bottom:6px;">
         <div style="display:flex;justify-content:space-between;align-items:center;">
           <div style="display:flex;align-items:center;gap:8px;">
+            <span title="${conectado ? 'Activo' : 'Desconectado'}" style="font-size:11px;">${luz}</span>
             <span data-uid="${c.uid}" data-email="${c.email}" class="choferBellBtn" style="cursor:pointer;font-size:16px;">🔔</span>
             <div style="font-size:14px;">${c.email}</div>
           </div>
@@ -538,7 +571,8 @@ async function refreshAdminView(){
         </div>
         <div class="choferAlertPanel" data-uid="${c.uid}" style="display:none;margin-top:10px;"></div>
       </div>
-    `).join('')
+    `;
+    }).join('')
     : '<div class="note">Todavía ningún chofer está vinculado a tu cuenta.</div>';
 
   async function cargarAlertasDeChofer(uid, email){
@@ -641,33 +675,6 @@ async function refreshAdminView(){
     };
   });
 
-  const misChoferesUids = misChoferes.map(c => c.uid);
-
-  const rows = await Promise.all(ROUTES.map(async (ruta) => {
-    try{
-      const res = await fetch(`${DB_URL}/ubicaciones/${ruta.id}.json`, { cache: 'no-store' });
-      const data = res.ok ? await res.json() : null;
-      if (!data || !misChoferesUids.includes(data.choferUid)) return { ruta, live: false, mine: false };
-      const ageSeconds = (Date.now() - data.timestamp) / 1000;
-      const isLive = data.active && ageSeconds < 20;
-      const email = (choferesMap[data.choferUid] && choferesMap[data.choferUid].email) || 'desconocido';
-      let semaforo = null;
-      if (isLive && data.salioOrigenTs){
-        const promedio = await getPromedioDuracion(ruta.id);
-        if (promedio){
-          const elapsedMin = (Date.now() - data.salioOrigenTs) / 60000;
-          const diffMin = elapsedMin - promedio;
-          if (diffMin > 3) semaforo = { emoji: '🔴', texto: 'Retrasado' };
-          else if (diffMin < -3) semaforo = { emoji: '🟡', texto: 'Adelantado' };
-          else semaforo = { emoji: '🟢', texto: 'A tiempo' };
-        }
-      }
-      return { ruta, live: isLive, mine: true, email, ageSeconds, semaforo };
-    }catch(e){
-      return { ruta, live: false, mine: false };
-    }
-  }));
-
   const relevantRows = rows.filter(r => r.mine);
   routesContainer.innerHTML = relevantRows.length ? relevantRows.map(r => `
     <div class="card" style="padding:14px 16px;margin-top:10px;">
@@ -679,6 +686,21 @@ async function refreshAdminView(){
       ${r.semaforo ? `<div class="note" style="margin-top:4px;">${r.semaforo.emoji} ${r.semaforo.texto}</div>` : ''}
     </div>
   `).join('') : '<div class="note">Ninguno de tus choferes está transmitiendo en este momento.</div>';
+
+  actualizarBusesEnMapaAdmin(relevantRows.filter(r => r.live && r.lat != null));
+}
+
+let adminBusMarkers = [];
+function actualizarBusesEnMapaAdmin(busesActivos){
+  if (!adminParadaPickerMap) return;
+  adminBusMarkers.forEach(m => adminParadaPickerMap.removeLayer(m));
+  adminBusMarkers = [];
+  busesActivos.forEach(r => {
+    const icon = L.divIcon({ className: '', html: '<div class="bus-marker">🚌</div>', iconSize: [34,34], iconAnchor: [17,17] });
+    const marker = L.marker([r.lat, r.lng], { icon }).addTo(adminParadaPickerMap);
+    marker.bindPopup(`<b>${r.ruta.name}</b><br>${r.email}`);
+    adminBusMarkers.push(marker);
+  });
 }
 
 const promedioCache = {};
