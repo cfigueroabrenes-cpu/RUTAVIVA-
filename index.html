@@ -196,6 +196,12 @@
       <div class="field-label">Ruta a seguir</div>
       <input type="text" id="routeSearchPasajero" placeholder="Buscar ruta...">
       <select id="routeSelectPasajero"></select>
+      <div id="tarifaBox" style="display:none;margin-top:10px;">
+        <div class="card" style="padding:12px 16px;">
+          <div class="field-label" style="margin-top:0;margin-bottom:2px;">Tarifa</div>
+          <div id="tarifaValor" style="font-family:'Fraunces',serif;font-weight:600;font-size:18px;"></div>
+        </div>
+      </div>
 
       <div id="paradasBox" style="display:none;margin-top:14px;">
         <div style="display:flex;justify-content:space-between;align-items:center;">
@@ -258,6 +264,16 @@
       <select id="adminRouteSelectParadas"></select>
       <div style="text-align:right;margin-top:10px;">
         <span id="btnAdminDeleteRoute" style="color:#D98B6F;cursor:pointer;font-family:'IBM Plex Mono',monospace;font-size:12px;text-decoration:underline;text-underline-offset:3px;">Eliminar esta ruta</span>
+      </div>
+
+      <div class="card" style="padding:16px;margin-top:12px;">
+        <div class="field-label" style="margin-top:0;">Tarifa de esta ruta</div>
+        <div style="display:flex;gap:8px;align-items:center;">
+          <div style="font-family:'IBM Plex Mono',monospace;font-size:16px;">₡</div>
+          <input type="text" id="adminTarifaInput" placeholder="ej: 500" style="margin-bottom:0;flex:1;" inputmode="numeric">
+          <button class="btn btn-start" id="btnAdminGuardarTarifa" style="margin-top:0;width:auto;padding:0 16px;">Guardar</button>
+        </div>
+        <div id="adminTarifaStatus" style="font-family:'IBM Plex Mono',monospace;font-size:11px;color:var(--text-muted);margin-top:6px;"></div>
       </div>
 
       <div class="card" style="padding:16px;margin-top:12px;">
@@ -490,7 +506,7 @@ document.getElementById('btnAdminLogin').onclick = () => {
       document.getElementById('adminOwnCode').textContent = adminOwnUid;
       adminLoginCard.style.display = 'none';
       adminContent.style.display = 'block';
-      loadRoutes().then(() => { refreshAdminView(); renderAdminParadasSelect(); renderAdminParadasList(); renderAdminMetricasSelect(); renderAdminMetricas(); });
+      loadRoutes().then(() => { refreshAdminView(); renderAdminParadasSelect(); renderAdminParadasList(); renderAdminTarifa(); renderAdminMetricasSelect(); renderAdminMetricas(); });
       setTimeout(() => {
         initAdminParadaPickerMap();
         adminParadaPickerMap.invalidateSize();
@@ -896,6 +912,44 @@ adminRouteSelectParadas.onchange = () => {
   btnAdminDeleteRoute.textContent = 'Eliminar esta ruta';
   btnAdminDeleteRoute.style.color = '#D98B6F';
   renderAdminParadasList();
+  renderAdminTarifa();
+};
+
+function renderAdminTarifa(){
+  const routeId = adminRouteSelectParadas.value;
+  const ruta = ROUTES.find(r => r.id === routeId);
+  document.getElementById('adminTarifaInput').value = (ruta && ruta.tarifa != null) ? ruta.tarifa : '';
+  document.getElementById('adminTarifaStatus').textContent = '';
+}
+
+document.getElementById('btnAdminGuardarTarifa').onclick = async () => {
+  const routeId = adminRouteSelectParadas.value;
+  const statusEl = document.getElementById('adminTarifaStatus');
+  const valor = document.getElementById('adminTarifaInput').value.trim();
+
+  if (!routeId){
+    statusEl.textContent = 'Elegí primero una ruta.';
+    statusEl.style.color = '#D98B6F';
+    return;
+  }
+  if (!adminIdToken){
+    statusEl.textContent = 'Necesitás iniciar sesión.';
+    statusEl.style.color = '#D98B6F';
+    return;
+  }
+  try{
+    await fetch(`${DB_URL}/rutas/${routeId}/tarifa.json?auth=${adminIdToken}`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(valor === '' ? null : valor)
+    });
+    await loadRoutes(routeId);
+    statusEl.textContent = 'Tarifa guardada.';
+    statusEl.style.color = 'var(--teal)';
+  }catch(e){
+    statusEl.textContent = 'No se pudo guardar: ' + e.message;
+    statusEl.style.color = '#D98B6F';
+  }
 };
 
 const btnAdminDeleteRoute = document.getElementById('btnAdminDeleteRoute');
@@ -1157,7 +1211,7 @@ async function loadRoutes(selectIdToKeep){
     if (!res.ok) throw new Error("HTTP " + res.status);
     const data = await res.json();
     if (data){
-      ROUTES = Object.keys(data).map(id => ({ id, name: data[id].name, paradas: data[id].paradas || [] }))
+      ROUTES = Object.keys(data).map(id => ({ id, name: data[id].name, paradas: data[id].paradas || [], tarifa: data[id].tarifa }))
         .sort((a,b) => a.name.localeCompare(b.name));
     } else if (idToken){
       // Primera vez: sembrar las rutas por defecto en Firebase para que queden guardadas de verdad
@@ -1568,6 +1622,14 @@ function updateParadasDisplay(){
   const ruta = ROUTES.find(r => r.id === routeId);
   const paradasBox = document.getElementById('paradasBox');
   const paradasList = document.getElementById('paradasList');
+
+  const tarifaBox = document.getElementById('tarifaBox');
+  if (ruta && ruta.tarifa != null && ruta.tarifa !== ''){
+    document.getElementById('tarifaValor').textContent = '₡' + ruta.tarifa;
+    tarifaBox.style.display = 'block';
+  } else {
+    tarifaBox.style.display = 'none';
+  }
 
   paradaMarkers.forEach(m => map.removeLayer(m));
   paradaMarkers = [];
