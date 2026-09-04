@@ -99,6 +99,8 @@
   .bus-marker{display:flex;align-items:center;justify-content:center;width:34px;height:34px;border-radius:50%;background:var(--gold);box-shadow:0 0 0 4px rgba(217,164,65,0.28);font-size:16px;position:relative;}
   .bus-marker::after{content:'';position:absolute;inset:-8px;border-radius:50%;border:2px solid var(--gold);animation:pulse 2s ease-out infinite;}
   .parada-marker{display:flex;align-items:center;justify-content:center;width:26px;height:26px;border-radius:50%;background:var(--teal);box-shadow:0 0 0 3px rgba(79,169,140,0.28);font-size:14px;}
+  .admin-bus-label{background:var(--gold);color:var(--text-dark);border:none;border-radius:6px;font-family:'IBM Plex Mono',monospace;font-size:11px;font-weight:600;padding:3px 8px;box-shadow:0 2px 6px rgba(0,0,0,0.3);}
+  .admin-bus-label::before{border-top-color:var(--gold);}
 
   ::-webkit-scrollbar{width:0;}
 
@@ -706,14 +708,21 @@ async function refreshAdminView(){
   actualizarBusesEnMapaAdmin(relevantRows.filter(r => r.live && r.lat != null));
 }
 
+let ultimosBusesEnVivo = [];
 let adminBusMarkers = [];
 function actualizarBusesEnMapaAdmin(busesActivos){
+  ultimosBusesEnVivo = busesActivos;
   if (!adminParadaPickerMap) return;
   adminBusMarkers.forEach(m => adminParadaPickerMap.removeLayer(m));
   adminBusMarkers = [];
-  busesActivos.forEach(r => {
+
+  const routeIdSeleccionada = adminRouteSelectParadas.value;
+  const busesDeEstaRuta = busesActivos.filter(r => r.ruta.id === routeIdSeleccionada);
+
+  busesDeEstaRuta.forEach(r => {
     const icon = L.divIcon({ className: '', html: '<div class="bus-marker">🚌</div>', iconSize: [34,34], iconAnchor: [17,17] });
     const marker = L.marker([r.lat, r.lng], { icon }).addTo(adminParadaPickerMap);
+    marker.bindTooltip(r.email, { permanent: true, direction: 'top', offset: [0, -18], className: 'admin-bus-label' });
     marker.bindPopup(`<b>${r.ruta.name}</b><br>${r.email}`);
     adminBusMarkers.push(marker);
   });
@@ -913,6 +922,7 @@ adminRouteSelectParadas.onchange = () => {
   btnAdminDeleteRoute.style.color = '#D98B6F';
   renderAdminParadasList();
   renderAdminTarifa();
+  actualizarBusesEnMapaAdmin(ultimosBusesEnVivo);
 };
 
 function renderAdminTarifa(){
