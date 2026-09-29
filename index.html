@@ -4,6 +4,13 @@
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0" />
 <title>RutaViva</title>
+<link rel="manifest" href="manifest.json">
+<link rel="icon" href="icon-192.png">
+<link rel="apple-touch-icon" href="apple-touch-icon.png">
+<meta name="theme-color" content="#12312A">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="RutaViva">
 <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.css" />
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght@0,9..144,500;0,9..144,600;0,9..144,700;1,9..144,500&family=Inter:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
@@ -317,6 +324,13 @@ const DB_URL = "https://rutaviva-9fb93-default-rtdb.firebaseio.com";
 let idToken = null;
 let driverUid = null;
 
+// Registro del service worker (necesario para que el navegador ofrezca "Instalar app")
+if ('serviceWorker' in navigator){
+  window.addEventListener('load', () => {
+    navigator.serviceWorker.register('sw.js').catch(() => {});
+  });
+}
+
 // ================= Avisos (toast + notificación del navegador) =================
 function showToast(titulo, subtitulo){
   const el = document.createElement('div');
@@ -376,20 +390,21 @@ document.getElementById('btnLogin').onclick = () => {
     body: JSON.stringify({ email, password, returnSecureToken: true })
   })
     .then(res => res.json().then(data => ({ ok: res.ok, data })))
-    .then(({ ok, data }) => {
+    .then(async ({ ok, data }) => {
       if (!ok) throw new Error(data.error ? data.error.message : "Error desconocido");
       idToken = data.idToken;
       driverUid = data.localId;
-      setAuthLine("Sesión de chófer activa");
-      loginCard.style.display = 'none';
-      choferPanel.style.display = 'block';
-      loadRoutes(routeSelectChofer.value);
       // El vínculo con el administrador ya quedó guardado cuando el administrador creó esta cuenta.
-      fetch(`${DB_URL}/choferes/${driverUid}.json?auth=${idToken}`, {
+      // Confirmamos el perfil antes de seguir, para que las reglas de seguridad ya te reconozcan como chófer.
+      await fetch(`${DB_URL}/choferes/${driverUid}.json?auth=${idToken}`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ email: data.email })
       }).catch(() => {});
+      setAuthLine("Sesión de chófer activa");
+      loginCard.style.display = 'none';
+      choferPanel.style.display = 'block';
+      loadRoutes(routeSelectChofer.value);
     })
     .catch(err => {
       loginError.style.display = 'block';
@@ -501,13 +516,19 @@ document.getElementById('btnAdminLogin').onclick = () => {
     body: JSON.stringify({ email, password, returnSecureToken: true })
   })
     .then(res => res.json().then(data => ({ ok: res.ok, data })))
-    .then(({ ok, data }) => {
+    .then(async ({ ok, data }) => {
       if (!ok) throw new Error(data.error ? data.error.message : "Error desconocido");
       adminIdToken = data.idToken;
       adminOwnUid = data.localId;
       document.getElementById('adminOwnCode').textContent = adminOwnUid;
       adminLoginCard.style.display = 'none';
       adminContent.style.display = 'block';
+      // Marca esta cuenta como administrador real en la base de datos (lo usan las reglas de seguridad)
+      await fetch(`${DB_URL}/admins/${adminOwnUid}.json?auth=${adminIdToken}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(true)
+      }).catch(() => {});
       loadRoutes().then(() => { refreshAdminView(); renderAdminParadasSelect(); renderAdminParadasList(); renderAdminTarifa(); renderAdminMetricasSelect(); renderAdminMetricas(); });
       setTimeout(() => {
         initAdminParadaPickerMap();
